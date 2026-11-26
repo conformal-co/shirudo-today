@@ -1181,6 +1181,10 @@ build/unit/quote_check: tools/quote-check/row.o
 build/unit/jar: UNIT_OBJS := tools/shirudo-build/jar.o
 build/unit/jar: tools/shirudo-build/jar.o
 
+# And for the signer, which only shirudo-build links.
+build/unit/sign: UNIT_OBJS := $(SIGN_OBJ)
+build/unit/sign: $(SIGN_OBJ) testing/unit/testkey.h
+
 UNIT_COVERAGE_CFLAGS = $(if $(filter --coverage,$(CFLAGS)),-DUNIT_GCOV)
 
 build/unit/%: testing/unit/%.c testing/unit/unit.c testing/unit/unit.h \
@@ -1198,7 +1202,7 @@ unit-tests: $(UNIT_TESTS)
 # The suites of the util files the stock-kernel profile changes or adds,
 # from its objects, linked statically as its binary is.
 STOCK_UNIT_SUITES := keys java_agent upatch_verify stock_kernel upatch_pins \
-		     measured chain eventlog
+		     measured chain eventlog sign
 STOCK_UNIT_TESTS := $(addprefix build/stock/unit/,$(STOCK_UNIT_SUITES))
 STOCK_UNIT_LIB := build/stock/unit/libshirudo.a
 
@@ -1210,6 +1214,7 @@ $(STOCK_UNIT_LIB): $(UTIL_OBJS) $(VERSION_OBJ)
 
 build/stock/unit/keys: UNIT_OBJS := build/stock/util/sign.o
 build/stock/unit/upatch_verify: UNIT_OBJS := build/stock/util/sign.o
+build/stock/unit/sign: UNIT_OBJS := build/stock/util/sign.o
 build/stock/unit/upatch_pins: LDFLAGS += -Wl,--wrap=opendir,--wrap=readdir64
 
 build/stock/unit/%: testing/unit/%.c testing/unit/unit.c testing/unit/unit.h \

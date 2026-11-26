@@ -1,0 +1,18 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 Authors of shirudo
+#
+# tools/signers/local-test-signer -- a SHIRUDO_SIGNER for tests: signs
+# standard input with the ML-DSA-87 key in <signing_key.pem>, in this
+# process and not in shirudo-build's, and writes the raw signature.
+#
+#   SHIRUDO_SIGNER='tools/signers/local-test-signer <signing_key.pem>'
+#
+# Pure ML-DSA with an empty context, as a KMS signs a raw message.
+# openssl pkeyutl signs only a file whose size it knows, not a pipe.
+set -eu
+[ $# -eq 1 ] || { echo "usage: $0 <signing_key.pem>" >&2; exit 2; }
+msg=$(mktemp)
+trap 'rm -f "$msg"' EXIT
+cat > "$msg"
+openssl pkeyutl -sign -rawin -inkey "$1" -in "$msg"

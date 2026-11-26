@@ -94,6 +94,18 @@ shirudo and shirudo-build
        service's output is connected to. When it names the file that is
        standard error, and ``/dev/log`` exists, messages go to syslog
        alone, so that the journal holds each once. Honored on a target.
+   * - ``SHIRUDO_SIGNER``
+     - ``shirudo-build``, wherever it signs
+     - A command, run by ``/bin/sh``, that signs in place of the private
+       key file: it reads the DER of a signature's CMS signed attributes
+       on standard input and writes their raw ML-DSA-87 signature to
+       standard output. ``signing_key.pem`` and ``--key`` are then not
+       read; ``cert.der`` or ``--cert`` must hold the command's public
+       key. A signature that does not verify against it, a non-zero
+       exit status or an output longer than a signature fails the
+       command before it writes anything. Unset or empty, the key file
+       signs. :doc:`/operate/maintain/keys` names the commands in
+       :src:`tools/signers/`.
    * - ``TMPDIR``
      - ``shirudo-build bpm build`` (staging directory), the generator
        scripts (``mktemp -d``)

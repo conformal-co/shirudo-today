@@ -108,6 +108,43 @@ keys or a separate key. Keep the private signing keys on the operator
 host. A target needs none, and ``shirudo status --show-full`` on a
 target reports ``keys/signing_key.pem absent``.
 
+Keep a signing key in a KMS
+---------------------------
+
+A key that must never be a file, the key of a release pipeline for
+example, stays in a KMS or HSM that signs ML-DSA-87. ``SHIRUDO_SIGNER``
+names a command that signs for ``shirudo-build``: every command that
+signs, ``build``, ``bpm build``, ``bpm push``, ``bpm tree append``,
+``keys vouch`` and ``image sign-root``, then reads only ``cert.der``.
+The command receives the DER of the CMS signed attributes, a few hundred
+bytes, and writes the raw signature; ``shirudo-build`` checks it against
+the certificate before it writes anything.
+:src:`tools/signers/` has three:
+
+- ``gcp-kms-mldsa``: Cloud KMS, a key version of algorithm
+  ``PQ_SIGN_ML_DSA_87``, named by ``SHIRUDO_KMS_KEY_VERSION``; the token
+  is ``GOOGLE_OAUTH_ACCESS_TOKEN`` or ``gcloud``'s. The caller needs
+  ``roles/cloudkms.signer`` on the key.
+- ``aws-kms-mldsa``: AWS KMS, a key of spec ``ML_DSA_87`` named by
+  ``SHIRUDO_KMS_KEY_ID``, signed with ``ML_DSA_SHAKE_256`` over the
+  ``RAW`` message.
+- ``local-test-signer <signing_key.pem>``: a key file in a process of
+  its own, for tests.
+
+``tools/signers/signer-cert`` writes the key's certificate once, from
+its public key, signed by the command, with the fields ``genkey`` gives
+its own:
+
+.. code-block:: console
+
+   operator$ gcloud kms keys versions get-public-key <n> --key <key> \
+                 --keyring <ring> --location <location> \
+                 --public-key-format pem --output-file kms-public.pem
+   operator$ export SHIRUDO_SIGNER=tools/signers/gcp-kms-mldsa
+   operator$ export SHIRUDO_KMS_KEY_VERSION=projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>
+   operator$ tools/signers/signer-cert kms-public.pem keys/cert.der
+   operator$ shirudo bpm build ./example-shield --version 1.0.0 --keys-dir keys
+
 What can change when
 --------------------
 

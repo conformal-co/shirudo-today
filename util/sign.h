@@ -34,7 +34,9 @@ struct sign_io {
 
 /*
  * -ENOSPC when the signature buffer is too small, -EINVAL on a parse
- * failure, -EIO on an OpenSSL failure.
+ * failure, -EIO on an OpenSSL or signer failure, -EBADMSG when the
+ * signer's signature does not verify. With signer_command() set,
+ * pkey_path is not read.
  */
 int cms_sign(struct sign_io *io,
 	     const char *pkey_path, const char *cert_path);
@@ -44,5 +46,13 @@ int cms_sign(struct sign_io *io,
  * regular file of mode 0600. The descriptor, or -errno logged.
  */
 int open_signing_key(const char *pkey_path);
+
+/*
+ * SHIRUDO_SIGNER, or NULL when it is unset or empty: a command run by
+ * /bin/sh that reads the DER of the signed attributes on standard input
+ * and writes their raw ML-DSA-87 signature to standard output, so that
+ * the private key never has to be a file here.
+ */
+const char *signer_command(void);
 
 #endif /* SHIRUDO_SIGN_H */

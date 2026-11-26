@@ -68,6 +68,13 @@ All five use one format, produced by one function on the operator:
   that form
 - With OpenSSL 4: no signed attributes; ML-DSA signs the content
   directly
+- With ``SHIRUDO_SIGNER`` set, under any OpenSSL: signed attributes as
+  with OpenSSL 3.x. The command signs their DER, a few hundred bytes,
+  with pure ML-DSA and an empty context (RFC 9882); ``shirudo-build``
+  builds the rest of the container from the certificate and verifies it
+  against that certificate before it writes anything. The private key
+  stays in the command's keeper, a KMS or HSM, and is never a file on
+  the operator host
 
 ``shirudo genkey`` creates the ML-DSA-87 key and a self-signed X.509
 certificate. ``shirudo keys vouch``, ``shirudo keys add`` and the image
@@ -168,7 +175,7 @@ Digests
    * - dm-verity images
      - SHA-256
      - Hash tree format 1 with 4096-byte data and hash blocks
-   * - CMS signed attributes, OpenSSL 3.x
+   * - CMS signed attributes, OpenSSL 3.x or ``SHIRUDO_SIGNER``
      - SHA-512
      - The signed content
    * - Seal label

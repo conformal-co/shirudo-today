@@ -155,16 +155,27 @@ static int compile_to_temp(const char *source, const char *vmlinux_h,
 	return 0;
 }
 
-int build_check_keys(const char *pkey, const char *cert)
+/* With SHIRUDO_SIGNER the private key is not a file here. */
+static int build_check_signing_key(const char *pkey)
 {
-	int fd = open_signing_key(pkey);
+	int fd;
 
+	if (signer_command())
+		return 0;
+	fd = open_signing_key(pkey);
 	if (fd < 0) {
 		if (fd != -EPERM)
 			pr_err("run `shirudo genkey` on the operator (or pass --key).");
 		return 1;
 	}
 	close(fd);
+	return 0;
+}
+
+int build_check_keys(const char *pkey, const char *cert)
+{
+	if (build_check_signing_key(pkey))
+		return 1;
 	if (access(cert, R_OK) != 0) {
 		pr_err("cert not readable: %s: %s",
 		       cert, strerror(errno));

@@ -1,0 +1,140 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 Authors of shirudo
+"""tools/signers/signer-cert -- write the self-signed certificate of an
+ML-DSA-87 key that only SHIRUDO_SIGNER can sign with, as `shirudo
+genkey` writes it for a key file: X.509 v3, serial 1, CN=shirudo, no
+expiration date, CA:FALSE, digitalSignature, subject and authority key
+identifiers. Run once per key; the certificate is public.
+
+    SHIRUDO_SIGNER=<command> tools/signers/signer-cert <public-key> <cert.der>
+
+<public-key> is the key's SubjectPublicKeyInfo, PEM or DER, or its raw
+2592-byte FIPS 204 encoding. openssl (>= 3.5) lays out the certificate
+with a throwaway key; the command signs the TBSCertificate, which ML-DSA
+signs whole with an empty context (RFC 9881), and the signature is
+checked against <public-key> before the certificate is written.
+"""
+
+import hashlib
+import os
+import subprocess
+import sys
+import tempfile
+from pathlib import Path
+
+MLDSA87_OID = bytes.fromhex("0609608648016503040313")
+MLDSA87_PUBLIC_LEN = 2592
+
+
+def fail(msg: str) -> None:
+    print(f"signer-cert: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def der_len(n: int) -> bytes:
+    if n < 0x80:
+        return bytes([n])
+    body = n.to_bytes((n.bit_length() + 7) // 8, "big")
+    return bytes([0x80 | len(body)]) + body
+
+
+def tlv(tag: int, value: bytes) -> bytes:
+    return bytes([tag]) + der_len(len(value)) + value
+
+
+def read_tlv(der: bytes, off: int) -> tuple[int, int]:
+    """Offset of the value of the element at off, and its end."""
+    first = der[off + 1]
+    if first < 0x80:
+        return off + 2, off + 2 + first
+    n = first & 0x7F
+    length = int.from_bytes(der[off + 2:off + 2 + n], "big")
+    return off + 2 + n, off + 2 + n + length
+
+
+def openssl(*args: str, data: bytes | None = None) -> bytes:
+    """Its messages only on failure: x509 warns of the throwaway key."""
+    run = subprocess.run(["openssl", *args], input=data, stdout=subprocess.PIPE,
+                         stderr=subprocess.PIPE)
+    if run.returncode:
+        sys.stderr.buffer.write(run.stderr)
+        fail(f"openssl {args[0]} failed")
+    return run.stdout
+
+
+def raw_public_key(path: Path) -> bytes:
+    data = path.read_bytes()
+    if len(data) == MLDSA87_PUBLIC_LEN:
+        return data
+    spki = openssl("pkey", "-pubin", "-in", str(path), "-outform", "DER")
+    raw = spki[-MLDSA87_PUBLIC_LEN:]
+    if spki != spki_of(raw):
+        fail(f"{path} is not an ML-DSA-87 public key")
+    return raw
+
+
+def spki_of(raw: bytes) -> bytes:
+    return tlv(0x30, tlv(0x30, MLDSA87_OID) + tlv(0x03, b"\0" + raw))
+
+
+def tbs_layout(work: Path, public_pem: Path, raw: bytes) -> bytes:
+    """A certificate with this key, signed by a throwaway one."""
+    skid = hashlib.sha1(raw).digest()
+    akid = ":".join(f"{b:02X}" for b in tlv(0x30, tlv(0x80, skid)))
+    (work / "ext.cnf").write_text(
+        "[v3]\n"
+        "basicConstraints = critical,CA:FALSE\n"
+        "keyUsage = digitalSignature\n"
+        "subjectKeyIdentifier = hash\n"
+        f"authorityKeyIdentifier = DER:{akid}\n", encoding="ascii")
+    openssl("genpkey", "-quiet", "-algorithm", "ML-DSA-87", "-out", str(work / "throwaway.pem"))
+    return openssl("x509", "-new", "-key", str(work / "throwaway.pem"),
+                   "-force_pubkey", str(public_pem), "-subj", "/CN=shirudo",
+                   "-set_serial", "1", "-not_after", "99991231235959Z",
+                   "-extfile", str(work / "ext.cnf"), "-extensions", "v3",
+                   "-outform", "DER")
+
+
+def external_sign(message: bytes) -> bytes:
+    command = os.environ.get("SHIRUDO_SIGNER", "")
+    if not command:
+        fail("SHIRUDO_SIGNER is not set")
+    run = subprocess.run(["/bin/sh", "-c", command], input=message, stdout=subprocess.PIPE)
+    if run.returncode or not run.stdout:
+        fail("SHIRUDO_SIGNER failed")
+    return run.stdout
+
+
+def main() -> int:
+    if len(sys.argv) != 3:
+        print(__doc__.split("\n\n")[1], file=sys.stderr)
+        return 2
+    public, out = Path(sys.argv[1]), Path(sys.argv[2])
+    with tempfile.TemporaryDirectory(prefix="signer-cert.") as tmp:
+        work = Path(tmp)
+        raw = raw_public_key(public)
+        public_pem = work / "public.pem"
+        public_pem.write_bytes(openssl("pkey", "-pubin", "-inform", "DER", "-outform", "PEM",
+                                       data=spki_of(raw)))
+        layout = tbs_layout(work, public_pem, raw)
+        body, _ = read_tlv(layout, 0)
+        tbs_value, tbs_end = read_tlv(layout, body)
+        _, alg_end = read_tlv(layout, tbs_end)
+        tbs, algorithm = layout[body:tbs_end], layout[tbs_end:alg_end]
+        if algorithm != tlv(0x30, MLDSA87_OID):
+            fail("openssl laid the certificate out with another algorithm")
+        signature = external_sign(tbs)
+        (work / "tbs").write_bytes(tbs)
+        (work / "sig").write_bytes(signature)
+        openssl("pkeyutl", "-verify", "-rawin", "-pubin", "-inkey", str(public_pem),
+                "-in", str(work / "tbs"), "-sigfile", str(work / "sig"))
+        cert = tlv(0x30, tbs + algorithm + tlv(0x03, b"\0" + signature))
+        openssl("x509", "-inform", "DER", "-noout", data=cert)
+    out.write_bytes(cert)
+    print(f"wrote {out} (sha256 {hashlib.sha256(cert).hexdigest()})")
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

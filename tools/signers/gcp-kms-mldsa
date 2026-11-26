@@ -1,0 +1,99 @@
+#!/usr/bin/env python3
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 Authors of shirudo
+"""tools/signers/gcp-kms-mldsa -- a SHIRUDO_SIGNER that signs standard
+input with an ML-DSA-87 key version in Google Cloud KMS and writes the
+raw signature to standard output. The private key stays in KMS.
+
+    export SHIRUDO_KMS_KEY_VERSION=projects/<project>/locations/<location>/keyRings/<ring>/cryptoKeys/<key>/cryptoKeyVersions/<n>
+    export SHIRUDO_SIGNER=tools/signers/gcp-kms-mldsa
+
+The key's algorithm is PQ_SIGN_ML_DSA_87, pure ML-DSA: KMS signs the
+bytes sent in `data`, as asymmetricSign takes them. The access token is
+GOOGLE_OAUTH_ACCESS_TOKEN, else `gcloud auth print-access-token`; it
+needs cloudkms.cryptoKeyVersions.useToSign on the key
+(roles/cloudkms.signer). With SHIRUDO_KMS_PROTECTION_LEVEL set (HSM,
+SOFTWARE), a signature made at another protection level is refused.
+Standard library only.
+"""
+
+import base64
+import json
+import os
+import subprocess
+import sys
+import urllib.error
+import urllib.request
+
+ENDPOINT = "https://cloudkms.googleapis.com/v1/"
+MAX_MESSAGE = 64 * 1024
+
+
+def crc32c(data: bytes) -> int:
+    crc = 0xFFFFFFFF
+    for byte in data:
+        crc ^= byte
+        for _ in range(8):
+            crc = (crc >> 1) ^ (0x82F63B78 & -(crc & 1))
+    return crc ^ 0xFFFFFFFF
+
+
+def fail(msg: str) -> None:
+    print(f"gcp-kms-mldsa: {msg}", file=sys.stderr)
+    sys.exit(1)
+
+
+def access_token() -> str:
+    token = os.environ.get("GOOGLE_OAUTH_ACCESS_TOKEN", "").strip()
+    if token:
+        return token
+    try:
+        run = subprocess.run(["gcloud", "auth", "print-access-token"], check=True,
+                             stdout=subprocess.PIPE, text=True)
+    except (OSError, subprocess.CalledProcessError) as err:
+        fail(f"no GOOGLE_OAUTH_ACCESS_TOKEN and gcloud gave no token: {err}")
+    return run.stdout.strip()
+
+
+def sign(version: str, message: bytes) -> bytes:
+    body = json.dumps({
+        "data": base64.b64encode(message).decode(),
+        "dataCrc32c": str(crc32c(message)),
+    }).encode()
+    req = urllib.request.Request(f"{ENDPOINT}{version}:asymmetricSign", data=body, method="POST",
+                                 headers={"Authorization": f"Bearer {access_token()}",
+                                          "Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=60) as resp:
+            reply = json.load(resp)
+    except urllib.error.HTTPError as err:
+        fail(f"asymmetricSign: HTTP {err.code}: {err.read(2048).decode(errors='replace')}")
+    except (urllib.error.URLError, OSError, ValueError) as err:
+        fail(f"asymmetricSign: {err}")
+    if reply.get("name") != version:
+        fail(f"KMS answered for {reply.get('name')!r}, not {version!r}")
+    if reply.get("verifiedDataCrc32c") is not True:
+        fail("KMS did not confirm the CRC32C of the message it signed")
+    level = os.environ.get("SHIRUDO_KMS_PROTECTION_LEVEL")
+    if level and reply.get("protectionLevel") != level:
+        fail(f"the key is protected at {reply.get('protectionLevel')}, not {level}")
+    signature = base64.b64decode(reply.get("signature", ""), validate=True)
+    if str(crc32c(signature)) != str(reply.get("signatureCrc32c")):
+        fail("the signature does not match its CRC32C")
+    return signature
+
+
+def main() -> int:
+    version = os.environ.get("SHIRUDO_KMS_KEY_VERSION", "")
+    if "/cryptoKeyVersions/" not in version:
+        fail("SHIRUDO_KMS_KEY_VERSION must name a key version, "
+             "projects/.../cryptoKeys/<key>/cryptoKeyVersions/<n>")
+    message = sys.stdin.buffer.read(MAX_MESSAGE + 1)
+    if not message or len(message) > MAX_MESSAGE:
+        fail(f"the message must be 1 to {MAX_MESSAGE} bytes")
+    sys.stdout.buffer.write(sign(version, message))
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

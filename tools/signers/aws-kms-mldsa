@@ -1,0 +1,24 @@
+#!/bin/sh
+# SPDX-License-Identifier: BSD-2-Clause
+# Copyright (c) 2026 Authors of shirudo
+#
+# tools/signers/aws-kms-mldsa -- a SHIRUDO_SIGNER that signs standard
+# input with an ML_DSA_87 key in AWS KMS and writes the raw signature to
+# standard output. The private key stays in KMS.
+#
+#   export SHIRUDO_KMS_KEY_ID=arn:aws:kms:<region>:<account>:key/<id>
+#   export SHIRUDO_SIGNER=tools/signers/aws-kms-mldsa
+#
+# Signing algorithm ML_DSA_SHAKE_256 with message type RAW: pure ML-DSA
+# over the message, of at most 4096 bytes, with an empty context. The
+# caller needs kms:Sign on the key; the AWS CLI v2 finds its
+# credentials as usual.
+set -eu
+: "${SHIRUDO_KMS_KEY_ID:?SHIRUDO_KMS_KEY_ID must name the key}"
+msg=$(mktemp)
+trap 'rm -f "$msg"' EXIT
+cat > "$msg"
+sig=$(aws kms sign --key-id "$SHIRUDO_KMS_KEY_ID" --message "fileb://$msg" \
+	--message-type RAW --signing-algorithm ML_DSA_SHAKE_256 \
+	--output text --query Signature)
+printf '%s' "$sig" | base64 -d
