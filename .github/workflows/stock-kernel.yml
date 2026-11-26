@@ -1,0 +1,110 @@
+# Fork-only (conformal-co/shirudo-today): the stock-kernel profile.
+#
+# Upstream's workflows need upstream's infrastructure (LVH VMs on bpf-next,
+# secrets, Code Security, Pages) and are disabled in this repository. This
+# one needs nothing but a GitHub-hosted runner: no secret, read-only token,
+# nothing published.
+#
+# It builds build/stock/shirudo (make STOCK_KERNEL=1, the target dependencies
+# from source as make target-deps does), runs make stock-unit-tests, and builds
+# the same commit again in two other directories, one with its own target
+# dependencies and one with the first's: the three binaries must have the
+# same sha256. The private shirudo-build image is not reachable here, so the
+# build runs in debian:testing with upstream's .github/scripts/debian-deps.sh
+# plus the tools make target-deps uses; the binary is not the pinned image's,
+# only reproducible against itself.
+#
+# Upstream's Lint workflow is disabled here because its checkpatch job wants
+# a Signed-off-by on every commit, which the fork's commits do not carry. The
+# coccinelle and checkpatch jobs below are its own, the latter with
+# checkpatch's sign-off check off (--no-signoff in ~/.checkpatch.conf).
+name: Stock kernel
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: stock-kernel-${{ github.event.pull_request.number || github.sha }}
+  cancel-in-progress: true
+
+jobs:
+  stock:
+    runs-on: ubuntu-24.04
+    container: debian:testing
+    timeout-minutes: 60
+    steps:
+      # Without git the checkout is no repository, and the build takes its
+      # version from one.
+      - name: Install git
+        run: apt-get update && apt-get install -y --no-install-recommends ca-certificates git
+
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Build dependencies
+        run: |
+          sh .github/scripts/debian-deps.sh
+          # make target-deps downloads and builds OpenSSL, libcurl and tpm2-tss.
+          apt-get install -y --no-install-recommends \
+            curl xz-utils perl autoconf autoconf-archive automake libtool libltdl-dev
+
+      - name: make STOCK_KERNEL=1
+        run: |
+          make -j"$(nproc)" STOCK_KERNEL=1
+          sha256sum build/stock/shirudo | tee "$RUNNER_TEMP/first.sha256"
+
+      - name: make stock-unit-tests
+        run: make -j"$(nproc)" stock-unit-tests
+
+      - name: Reproducible (two more directories)
+        run: |
+          git config --global --add safe.directory '*'
+          TMPDIR="$RUNNER_TEMP" .github/scripts/check-stock-reproducible.sh |
+            tee "$RUNNER_TEMP/reproducible.txt"
+          tail -1 "$RUNNER_TEMP/reproducible.txt" >>"$GITHUB_STEP_SUMMARY"
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: shirudo-stock
+          path: build/stock/shirudo
+
+  coccinelle:
+    name: Coccinelle
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Install Coccinelle
+        run: sudo apt-get update && sudo apt-get install -y coccinelle
+
+      - name: Check the tree against the Coccinelle rules
+        run: .github/scripts/check-coccinelle.sh
+
+  checkpatch:
+    name: Checkpatch
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Run checkpatch over every commit, without the sign-off check
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          BASE_SHA: ${{ github.event.pull_request.base.sha }}
+          HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+          BEFORE_SHA: ${{ github.event.before }}
+          SHA: ${{ github.sha }}
+        run: |
+          echo --no-signoff >"$HOME/.checkpatch.conf"
+          .github/scripts/ci-commit-range.sh .github/scripts/check-style.sh
