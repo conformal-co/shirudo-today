@@ -382,7 +382,8 @@ Target acceptance
 #. The manifest has one document layer and one signature layer, each
    matching its descriptor's digest and size.
 #. The signature verifies against the active config's non-revoked BPF
-   signer set.
+   signer set (the stock-kernel profile: the certificates of
+   ``/etc/shirudo/keys``, :doc:`/operate/plan/stock-kernels`).
 #. The document parses with the rules above, ``tree_id`` is a package
    name, and every operation has a valid ``id``, ``op`` and digests and a
    correct ``operation_digest``.

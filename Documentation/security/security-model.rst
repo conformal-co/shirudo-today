@@ -8,6 +8,13 @@
 Security model
 ==============
 
+.. warning::
+
+   The guarantees on this page need the patched kernel. On the
+   stock-kernel profile, ``make STOCK_KERNEL=1``, none of those that
+   hold against root holds. See :doc:`/operate/plan/stock-kernels`,
+   section "What is lost, against upstream's threat model".
+
 shirudo restricts the ``bpf()`` system call so that only loaders signed
 with the operator's key install BPF code, root included. Every change to
 the set of loaded upatches is measured in the TPM, and an operator

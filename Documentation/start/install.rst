@@ -8,6 +8,15 @@
 Install shirudo
 ===============
 
+.. note::
+
+   shirudo.today installs the stock-kernel profile with ``curl -fsSL
+   https://shirudo.today/install | bash``, which asks for ``sudo``
+   itself; ``sudo shirudo-uninstall`` removes it.
+   :doc:`/operate/plan/stock-kernels` says how to build and set it up
+   from source; read its section "What is lost, against upstream's
+   threat model" first.
+
 shirudo installs in one of two roles. The operator host holds the signing
 key and builds, signs and publishes. A target verifies and enforces. Each
 role has its own package, built from a checkout, and one host takes one

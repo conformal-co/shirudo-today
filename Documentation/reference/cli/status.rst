@@ -8,6 +8,12 @@
 shirudo status
 ==============
 
+.. warning::
+
+   The stock-kernel profile, ``make STOCK_KERNEL=1``, reports other
+   fields and verdicts; see :doc:`/operate/plan/stock-kernels`,
+   section "Status".
+
 Report the local readiness and state of this host, and optionally send the
 keepalive, the status record the TPM quotes, as an OTLP log, or print
 its body.

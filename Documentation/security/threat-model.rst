@@ -8,6 +8,13 @@
 Threat model
 ============
 
+.. warning::
+
+   The goals on this page hold on a patched kernel. On the stock-kernel
+   profile, ``make STOCK_KERNEL=1``, every goal that holds against root
+   is lost; :doc:`/operate/plan/stock-kernels`, section "What is lost,
+   against upstream's threat model", maps them goal by goal.
+
 This page states what shirudo protects, against whom, by which
 mechanism, and where each mechanism stops. It describes the code in the
 tree. Where the code and this page disagree, the code is right and the

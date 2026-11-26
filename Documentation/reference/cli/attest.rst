@@ -8,6 +8,11 @@
 shirudo attest
 ==============
 
+.. warning::
+
+   Not part of the stock-kernel profile, ``make STOCK_KERNEL=1``. See
+   :doc:`/operate/plan/stock-kernels`.
+
 Produce a TPM-signed evidence document for this target, and activate the
 operator's credential challenge when given one.
 

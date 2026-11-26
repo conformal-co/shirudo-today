@@ -8,10 +8,19 @@
 System requirements
 ===================
 
+.. warning::
+
+   The patched kernel and TPM 2.0 below are what upstream's profile
+   requires. The stock-kernel profile, ``make STOCK_KERNEL=1``, runs
+   without them from the BPF of Linux 5.17 and gives up every guarantee
+   that holds against root. See :doc:`/operate/plan/stock-kernels`,
+   section "What is lost, against upstream's threat model".
+
 What the target, the operator host and the host that builds the target
 binary need. A missing requirement fails the build, ``shirudo init`` or
 the load. shirudo has no compatibility mode and no fallback for an older
-kernel.
+kernel; the separate stock-kernel build of :doc:`stock-kernels` runs
+upatches on a distribution kernel without the guarantees of this one.
 
 Architectures
 -------------

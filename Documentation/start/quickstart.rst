@@ -8,6 +8,14 @@
 Quickstart
 ==========
 
+.. warning::
+
+   shirudo.today adds a stock-kernel profile, ``make STOCK_KERNEL=1``.
+   On a stock kernel root can load unsigned BPF and unload or replace
+   any upatch, and there is no TPM measurement or attestation. See
+   :doc:`/operate/plan/stock-kernels`, section "What is lost, against
+   upstream's threat model".
+
 In this tutorial you build shirudo from a checkout, boot a protected test
 target in a virtual machine and take one upatch through its whole life:
 you sign it on the operator side, load it on the target, check with the

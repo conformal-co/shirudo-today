@@ -8,6 +8,15 @@
 How it works
 ============
 
+.. warning::
+
+   This describes a patched kernel. On the stock-kernel profile,
+   ``make STOCK_KERNEL=1``, no kernel enforces any of it against root:
+   signatures are checked in userspace, root can load unsigned BPF and
+   unload any upatch, and nothing is measured in a TPM. See
+   :doc:`/operate/plan/stock-kernels`, section "What is lost, against
+   upstream's threat model".
+
 This page follows one upatch from a kernel fix to a measured load on a
 target, and back out again. Figure 1 shows the path: the operator host
 builds and signs, an OCI registry stores, the target pulls and loads, its

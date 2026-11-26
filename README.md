@@ -1,8 +1,143 @@
-<picture>
-  <source media="(prefers-color-scheme: dark)" srcset="Documentation/logos/shirudo-horizontal-for-dark-back.png">
-  <img src="Documentation/logos/shirudo-horizontal-for-light-back.png" width="350" alt="shirudo">
-</picture>
-<br/><br/>
+# shirudo.today
+
+> [!IMPORTANT]
+> **This is shirudo.today, a fork of [shirudo-dev/shirudo](https://github.com/shirudo-dev/shirudo)
+> maintained by Conformal. It is not affiliated with or endorsed by the shirudo project, OpenAI or Cisco.**
+> It adds a stock-kernel profile so signed upatches run on unmodified distribution kernels.
+
+## Read this first
+
+On a stock kernel, shirudo protects against unprivileged users and the
+network, not against root:
+
+- **Root can load unsigned BPF.** So can a privileged container, or any
+  task with `CAP_BPF` and `CAP_SYS_ADMIN`. shirudo verifies signatures
+  only for what it loads itself.
+- **Root can unload or replace any upatch**, and make `shirudo status`
+  report it as loaded: the keys, the archive, the eventlog and the pin
+  records are plain root-owned files.
+- **There is no TPM measurement and no attestation.** The eventlog is a
+  log root can rewrite; there is no `shirudo attest`.
+- **Shields start after the root file system and fail open.** `init`
+  runs from a systemd unit, not the initrd; a upatch that fails to load
+  leaves its hole open, and nothing enforces its presence.
+- **Whoever holds a trusted signing key can load kernel code on the
+  host.** Every certificate in `/etc/shirudo/keys` is trusted, at once.
+
+What it keeps: unprivileged users and the network cannot load, detach or
+read shirudo's BPF, and every load is refused unless its signature
+verifies against a certificate in `/etc/shirudo/keys`. The full mapping
+onto upstream's threat model is in
+[What is lost, against upstream's threat model](Documentation/operate/plan/stock-kernels.rst#what-is-lost-against-upstreams-threat-model).
+
+## What this fork changes
+
+Upstream shirudo needs a kernel carrying its patches. This fork adds a
+build profile, `make STOCK_KERNEL=1`, that runs on the kernels
+distributions already ship. Without `STOCK_KERNEL=1` the build is
+upstream's.
+
+**Changed in the stock-kernel profile**
+
+| Upstream, patched kernel | This fork, stock kernel |
+|---|---|
+| The kernel verifies each loader's signature against the sealed `.bpf` keyring | `shirudo` verifies the same CMS signature in userspace, then loads the loader without a signature |
+| Trust anchor: sealed kernel keyring, vouched certificates | Every DER certificate in `/etc/shirudo/keys` (root-owned) is trusted; `revoked/` excludes one |
+| Pin records in bpffs extended attributes | Pin records in per-boot files under `/run/shirudo/pins` |
+| Measurement into a TPM NV register; `shirudo attest` | The eventlog alone, replayed per boot; no TPM, no `attest` |
+| `init` from the initrd, guards attached at boot | `init` from the root file system by a systemd unit; no guards |
+| Pre-flight of the patched kernel's ABI | Probes of the BPF of Linux 5.17 (kernel BTF, `BPF_PROG_TYPE_SYSCALL` with `bpf_sys_bpf()`, BTF type tags, in-kernel CO-RE); a kernel without them is refused |
+| Attach kinds the patched kernel provides | A load whose attach kind the kernel lacks is refused, and `lsm` programs are refused unless `bpf` is in the active LSM list |
+| Policy labels carried to tasks by the seal LSM | A upatch with policy labels is refused |
+
+`shirudo status` reports `"profile": "stock-kernel"`, what it does not
+guarantee and whether the BPF LSM is active.
+
+**What you give up.** Upstream is built against root on the target; on a
+stock kernel nothing the kernel would enforce is enforced, so none of
+upstream's goals against root holds:
+
+- **G1, signed BPF only: lost against root.** Any root process (or task
+  with `CAP_BPF` and `CAP_PERFMON`, or `CAP_SYS_ADMIN`) can load unsigned
+  BPF. shirudo still refuses a tampered or foreign-signed package for what
+  it loads itself.
+- **G2, upatches stay attached: lost against root.** Root can detach,
+  unpin or replace any upatch, or race a load between its check and
+  `BPF_PROG_LOAD`.
+- **G3, only shirudo changes its state: lost against root.** Keys,
+  archive, eventlog and pin records are plain root-owned files;
+  adding a certificate to `/etc/shirudo/keys` trusts it at once.
+- **G4, measurement in the TPM: lost.** The eventlog is a log root can
+  rewrite. No TPM is used.
+- **G5, attestation: lost.** There is no `shirudo attest`; a compromised
+  host can report healthy upatches.
+- **G6, a trace of refused attempts: partly kept.** Upatches count what
+  they refuse; attempts to tamper with shirudo are not counted.
+- **G7, only signed artifacts: kept** against the network and registries;
+  root can register its own repository or certificate.
+- **G8, maps and pins private to shirudo: lost against root**, kept
+  against unprivileged code.
+- No config images, dm-verity, initrd phase, revocation by config or
+  policy labels on tasks; `init` runs later in boot, from the root file
+  system.
+
+Against unprivileged local code (ADV-A), the adversary a kernel-CVE
+upatch is for, nothing a upatch needs is lost: it cannot load BPF, detach
+a link or read a map. A loaded upatch is not proof that it works on that
+kernel: test each upatch on each kernel line. Use the profile to roll
+shields out to hosts that cannot run a patched kernel yet, not as a
+replacement for one. The mapping onto upstream's threat model, with the
+adversaries and residual risks, is in
+[stock-kernels.rst](Documentation/operate/plan/stock-kernels.rst#what-is-lost-against-upstreams-threat-model).
+
+**Supported kernels.** The profile needs the BPF of Linux 5.17, which
+`shirudo init --check-only` probes, whatever release the kernel reports.
+Tested on Ubuntu 24.04 and 26.04, Debian 12 and 13, RHEL 9 and 10 rebuilds (Alma,
+Rocky, CentOS Stream, Oracle Linux), Fedora and Fedora CoreOS, openSUSE
+Leap 15.6 and 16, Amazon Linux 2023 and Flatcar. Ubuntu 22.04, Debian 11,
+RHEL 8 and Amazon Linux 2 are not supported. Where the BPF LSM is not
+active by default (Ubuntu 24.04's 6.8 kernels, generic and `-lts-24.04`
+cloud, and Flatcar), `lsm=…,bpf` on the kernel command line and one reboot
+are needed for `lsm` upatches; Ubuntu 24.04's 7.0 kernels have it.
+
+**Unchanged.** The `.upatch` and `.bee` formats, signing, `bpm`, the
+Beefile, packages and upatches. A package built and signed for upstream
+shirudo loads unchanged on the stock-kernel profile.
+
+## Install
+
+```console
+curl -fsSL https://shirudo.today/install | bash
+sudo shirudo status
+sudo shirudo-uninstall    # removes it again
+```
+
+Run the installer as your user: it asks for `sudo` itself where it needs
+root. Shields for kernel CVEs are published at
+[registry.conformal.co](https://registry.conformal.co).
+
+To build from source instead:
+
+```console
+make STOCK_KERNEL=1
+```
+
+The binary is `build/stock/shirudo`. Set up a target as in
+[stock-kernels.rst](Documentation/operate/plan/stock-kernels.rst#set-up-a-target).
+
+## Keeping up with upstream
+
+The fork is the `main` branch, rebased onto upstream `main` (base:
+[`87ae310f`](https://github.com/shirudo-dev/shirudo/commit/87ae310f)).
+The changes are kept in a short series of self-contained commits
+(`git log upstream/main..main`) so they stay easy to review and
+rebase. Without `STOCK_KERNEL=1` the build is upstream's. Report
+fork-specific problems here, not upstream.
+
+---
+
+Upstream's README follows, unchanged except for the logo and its CI
+badges ("Project status"), removed.
 
 shirudo is a BPF-based security platform for Linux. After boot-time
 initialization, it restricts BPF program loads from userspace to signed
@@ -118,19 +253,6 @@ For upgrades of shirudo and the kernel on a target, consult
 
 Every package comes with a Software Bill of Materials (SBOM) in
 [SPDX](https://spdx.dev/) format.
-
-## Project status
-
-[![Build packages](https://github.com/shirudo-dev/shirudo/actions/workflows/packages.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/packages.yml)
-[![CI suite](https://github.com/shirudo-dev/shirudo/actions/workflows/tests.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/tests.yml)
-[![Sanitizers](https://github.com/shirudo-dev/shirudo/actions/workflows/sanitizers.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/sanitizers.yml)
-[![Proofs](https://github.com/shirudo-dev/shirudo/actions/workflows/proofs.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/proofs.yml)
-[![CodeQL](https://github.com/shirudo-dev/shirudo/actions/workflows/codeql.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/codeql.yml)
-[![Documentation](https://github.com/shirudo-dev/shirudo/actions/workflows/docs.yml/badge.svg?branch=main)](https://github.com/shirudo-dev/shirudo/actions/workflows/docs.yml)<br/>
-[![Coverage Status](https://coveralls.io/repos/github/shirudo-dev/shirudo/badge.svg?branch=main)](https://coveralls.io/github/shirudo-dev/shirudo?branch=main)
-[![Coverity Scan Build Status](https://scan.coverity.com/projects/33401/badge.svg)](https://scan.coverity.com/projects/shirudo-dev-shirudo)
-[![OpenSSF Best Practices](https://www.bestpractices.dev/projects/17035/badge)](https://www.bestpractices.dev/projects/17035)
-[![OpenSSF Scorecard](https://api.scorecard.dev/projects/github.com/shirudo-dev/shirudo/badge)](https://scorecard.dev/viewer/?uri=github.com/shirudo-dev/shirudo)
 
 ## License
 

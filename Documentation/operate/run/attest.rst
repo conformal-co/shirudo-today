@@ -8,6 +8,12 @@
 Attest targets
 ==============
 
+.. warning::
+
+   ``shirudo attest`` is not part of the stock-kernel profile,
+   ``make STOCK_KERNEL=1``: it measures nothing in a TPM and has no
+   evidence to give. See :doc:`/operate/plan/stock-kernels`.
+
 ``shirudo status`` is the target's own account of itself, and a target
 that root controls can say anything. Attestation gives you an account
 the target cannot forge: the TPM signs the measurement register and the

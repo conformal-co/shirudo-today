@@ -5,6 +5,14 @@
 shirudo documentation
 =====================
 
+.. warning::
+
+   shirudo.today adds a stock-kernel profile, ``make STOCK_KERNEL=1``.
+   On a stock kernel root can load unsigned BPF and unload or replace
+   any upatch, and there is no TPM measurement or attestation. See
+   :doc:`/operate/plan/stock-kernels`, section "What is lost, against
+   upstream's threat model".
+
 .. rst-class:: etymology
 
 shirudo (Japanese シールド, pronounced "shee-roo-doh") means "shield".

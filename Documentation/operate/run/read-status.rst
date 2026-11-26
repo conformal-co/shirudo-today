@@ -8,6 +8,13 @@
 Read shirudo status
 ===================
 
+.. warning::
+
+   On the stock-kernel profile, ``make STOCK_KERNEL=1``, ``status``
+   reports none of the keyring, guard, tamper, config image or TPM
+   views of this page, and refuses ``--otel`` and ``--keepalive``. See
+   :doc:`/operate/plan/stock-kernels`, section "Status".
+
 ``shirudo status`` is the target's own report on its enforcement, its
 ``.bpf`` keyring, its measurement register and its signed config. It is
 the first command to run on a target that misbehaves, and the keepalive
