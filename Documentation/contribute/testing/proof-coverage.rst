@@ -1631,6 +1631,10 @@ a proof covers.
      - Mostly calls into the kernel, which CBMC has no body for: files,
        extended attributes, mounts, the device mapper, keyrings,
        ``bpf()``, netlink, ``/proc`` and the process's own limits
+   * - :src:`util/chain_stock.c`, :src:`util/stock_kernel.c`
+     - Built only in the stock-kernel profile, ``make STOCK_KERNEL=1``,
+       which no harness defines ``CONFIG_STOCK_KERNEL`` for; files,
+       ``bpf()`` probes, the BTF reader of libbpf and ``/sys``
    * - :src:`util/crypto_openssl.c`, :src:`util/curl.c`,
        :src:`util/elf_target.c`, :src:`util/kernel_abi.c`,
        :src:`util/nv_writer.c`, :src:`util/sign.c`,

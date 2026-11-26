@@ -112,6 +112,7 @@ static struct trusted_set enrolled;
 
 static bool initrd_mode;
 
+#ifndef CONFIG_STOCK_KERNEL
 static int keyring_holds_set(key_serial_t ring,
 			     const struct trusted_set *set)
 {
@@ -248,6 +249,7 @@ static int init_keyring(void)
 	enrolled = set;
 	return 0;
 }
+#endif
 
 static int init_bpffs(void)
 {
@@ -317,6 +319,7 @@ static int init_bpffs(void)
 	return 0;
 }
 
+#ifndef CONFIG_STOCK_KERNEL
 static int attach_pin(struct bpf_program *p, const char *pin,
 		      struct bpf_link **out)
 {
@@ -1011,6 +1014,7 @@ static int init_lsm(void)
 	bpf_object__close(obj);
 	return err;
 }
+#endif
 
 #define HEXLEN(n)	((n) * 2 + 1)
 
@@ -1461,6 +1465,10 @@ static int chain_extend_init(struct measured_upatch *set, size_t n)
 		return ret;
 	}
 	if (info.reused) {
+#ifdef CONFIG_STOCK_KERNEL
+		pr_info("init: this boot is on record already; nothing changed");
+		return 0;
+#endif
 		pr_info("tpm: register already bound this boot; chain "
 			"unchanged (index 0x%08X)", NV_INDEX);
 		return 0;
@@ -1473,6 +1481,11 @@ static int chain_extend_init(struct measured_upatch *set, size_t n)
 		       "log disagree; the operator must reconcile");
 		return ret;
 	}
+#ifdef CONFIG_STOCK_KERNEL
+	pr_info("init: eventlog anchored for this boot (%zu upatch%s in set)",
+		n, n == 1 ? "" : "es");
+	return 0;
+#endif
 
 	pr_info("tpm: register bound in the %s and extended (index 0x%08X, "
 		"PCR %u anchored, %zu upatch%s in set)",
@@ -1599,6 +1612,39 @@ static int init_phase_error(int ret, const char *phase)
 	return ret;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* No keyring to seal, LSM to attach or config image on a stock kernel. */
+static int run_init(void)
+{
+	struct measured_upatch *set = NULL;
+	struct eventlog_init rec;
+	size_t n = 0;
+	int ret;
+
+	ret = init_bpffs();
+	if (ret)
+		return init_phase_error(ret, "private bpffs setup");
+	ret = java_agent_dir_prepare();
+	if (ret)
+		return init_phase_error(ret, "Java agent directory setup");
+	ret = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR, &enrolled);
+	if (!ret && !enrolled.n)
+		ret = -ENOKEY;
+	if (ret)
+		return init_phase_error(ret, "loading trusted keys");
+	ret = eventlog_boot_init(&rec);
+	if (ret && ret != -ENOENT)
+		return init_phase_error(ret, "reading the eventlog");
+	ret = boot_restore(!ret, &set, &n);
+	if (!ret)
+		ret = chain_extend_init(set, n);
+	xfree(set, n * sizeof(*set));
+	if (ret)
+		return init_phase_error(ret, "restoring boot upatches");
+	pr_info("init: complete (stock kernel: signatures verified in userspace, no enforcement against root)");
+	return 0;
+}
+#else
 static int run_init(void)
 {
 	struct measured_upatch *set = NULL;
@@ -1697,6 +1743,7 @@ static int run_init(void)
 	pr_info("init: complete (LSM active, writable state sealed)");
 	return 0;
 }
+#endif
 
 int cmd_init(int argc, const char **argv)
 {
@@ -1725,11 +1772,18 @@ int cmd_init(int argc, const char **argv)
 	}
 
 	initrd_mode = in_initrd();
+#ifdef CONFIG_STOCK_KERNEL
+	if (initrd_mode) {
+		pr_err("init: the stock-kernel profile runs from the root file system, not the initrd");
+		return 1;
+	}
+#else
 	ret = image_bootstrap_load();
 	if (ret < 0) {
 		pr_err("init: authenticated image settings: %s", strerror(-ret));
 		return 1;
 	}
+#endif
 	if (json && !check_only) {
 		opt_usage(&p, "--json takes --check-only");
 		return EXIT_USAGE;

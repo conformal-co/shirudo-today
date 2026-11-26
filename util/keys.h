@@ -55,6 +55,17 @@ struct trusted_set {
 int keys_load(const char *keys_dir, const char *revoked_dir,
 	      bool with_trusted, struct trusted_set *set);
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * The stock-kernel profile's set: every regular *.der directly in dir,
+ * each trusted on its own, without a vouch, less the keys revoked_dir
+ * names, NULL for none. A key held twice is a member once. -E2BIG past KEYS_MAX, or the
+ * error of reading a certificate; an empty set is no error.
+ */
+int keys_load_dir(const char *dir, const char *revoked_dir,
+		  struct trusted_set *set);
+#endif
+
 /*
  * The set of a config image, read through its root descriptor; historical
  * vouches are validated before revoked signing keys are excluded.

@@ -720,6 +720,56 @@ int keys_load(const char *keys_dir, const char *revoked_dir,
 	return load_set(primary, keys_dir, revoked_dir, with_trusted, set);
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+static int stock_admit(struct trusted_set *set, const char *dir,
+		       const char *name, const char *revoked_dir)
+{
+	__u8 sha256[32], fingerprint[32];
+	char path[PATH_MAX];
+	struct stat st;
+	int ret;
+
+	if (strsprintf(path, sizeof(path), "%s/%s", dir, name) < 0)
+		return -ENAMETOOLONG;
+	if (lstat(path, &st))
+		return -errno;
+	if (!S_ISREG(st.st_mode))
+		return 0;
+	ret = keys_take_file(path, sha256, fingerprint);
+	if (ret)
+		return ret;
+	if (keys_is_revoked(revoked_dir, fingerprint) ||
+	    set_holds(set, fingerprint))
+		return 0;
+	return set_add(set, path, sha256, fingerprint, NULL, NULL, 0);
+}
+
+int keys_load_dir(const char *dir, const char *revoked_dir,
+		  struct trusted_set *set)
+{
+	struct dirent **names = NULL;
+	int n, i, ret = 0;
+
+	memset(set, 0, sizeof(*set));
+	n = scandir(dir, &names, select_der, alphasort);
+	if (n < 0)
+		return -errno;
+	for (i = 0; i < n; i++) {
+		if (!ret)
+			ret = stock_admit(set, dir, names[i]->d_name,
+					  revoked_dir);
+		libc_free(names[i]);
+	}
+	libc_free(names);
+	if (ret)
+		return ret;
+	set->n_revoked = revoked_dir ? count_der(revoked_dir) : 0;
+	if (set->n > 1)
+		qsort(set->certs, set->n, sizeof(set->certs[0]), cert_cmp);
+	return 0;
+}
+#endif
+
 static int digest_cmp(const void *a, const void *b)
 {
 	return memcmp(a, b, 32);

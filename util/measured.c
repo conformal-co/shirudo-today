@@ -5,7 +5,6 @@
 #include <errno.h>
 #include <limits.h>
 #include <string.h>
-#include <sys/xattr.h>
 
 #include <shirudo/misc.h>
 #include <shirudo/string.h>
@@ -20,6 +19,7 @@
 #include "paths.h"
 #include "seal.h"
 #include "upatch.h"
+#include "upatch_pins.h"
 
 struct measured_entry {
 	char	name[UPATCH_NAME_MAX + 1];
@@ -445,17 +445,13 @@ int measured_unmeasured_pins(const struct measured_set *s,
 		char payload_hex[2 * UPATCH_PAYLOAD_HASH_LEN + 1] = "";
 		__u8 payload[UPATCH_PAYLOAD_HASH_LEN];
 		char name[UPATCH_NAME_MAX + 1];
-		char dir[PATH_MAX];
 
 		if (!strcmp(pins[i]->d_name, ".") ||
 		    !strcmp(pins[i]->d_name, "..") ||
 		    upatch_name_from_bpffs(name, sizeof(name),
-					   pins[i]->d_name) ||
-		    strsprintf(dir, sizeof(dir), "%s/%s", BPFFS_UPATCHES_DIR,
-			       pins[i]->d_name) < 0)
+					   pins[i]->d_name))
 			continue;
-		if (getxattr(dir, XATTR_PAYLOAD, payload, sizeof(payload)) ==
-		    (ssize_t)sizeof(payload))
+		if (!upatch_pin_payload(name, payload))
 			hex_encode(payload, sizeof(payload), payload_hex);
 		if (measured_holds(s, name, payload_hex))
 			continue;

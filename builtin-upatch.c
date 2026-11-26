@@ -62,6 +62,7 @@
 #include "util/paths.h"
 #include "util/report.h"
 #include "util/seal.h"
+#include "util/stock_kernel.h"
 #include "util/timefmt.h"
 #include "util/upatch.h"
 #include "util/upatch_decode.h"
@@ -915,8 +916,10 @@ static int loader_map_create(__u32 value_size, const void *excl_prog_hash,
 	attr.key_size = 4;
 	attr.value_size = value_size ? value_size : 4;
 	attr.max_entries = 1;
+#ifndef CONFIG_STOCK_KERNEL
 	attr.excl_prog_hash = ptr_to_u64(excl_prog_hash);
 	attr.excl_prog_hash_size = excl_prog_hash_sz;
+#endif
 	strscpy_literal(attr.map_name, "__loader.map");
 
 	fd = syscall(__NR_bpf, BPF_MAP_CREATE, &attr, sizeof(attr));
@@ -966,10 +969,13 @@ static int prog_load_signed(const struct bpf_insn *insns, size_t insn_cnt,
 	attr.log_level = log_buf ? 1 : 0;
 	attr.log_size = (__u32)log_sz;
 	attr.log_buf = ptr_to_u64(log_buf);
+#ifndef CONFIG_STOCK_KERNEL
 	attr.signature = ptr_to_u64(signature);
 	attr.signature_size = signature_sz;
 	attr.keyring_id = keyring_id;
+#endif
 	attr.fd_array = ptr_to_u64(fd_array);
+#ifndef CONFIG_STOCK_KERNEL
 	/*
 	 * fd_array_cnt makes the verifier resolve the exclusive metadata
 	 * map up front and fold its frozen contents into the signed buffer
@@ -977,6 +983,7 @@ static int prog_load_signed(const struct bpf_insn *insns, size_t insn_cnt,
 	 * kernel refuses to bind a map through the sparse fd_array path.
 	 */
 	attr.fd_array_cnt = 1;
+#endif
 	memcpy(attr.prog_name, prog_name,
 	       strnlen(prog_name, sizeof(attr.prog_name)));
 
@@ -1481,6 +1488,29 @@ static int prog_attach_for_spec(int prog_fd,
 /* The root of the unified cgroup hierarchy. */
 #define ROOT_CGROUP_ID		1ULL
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * Before 6.6 a perf-event link does not report its kprobe or uprobe,
+ * before 6.5 a kprobe.multi link its count, before 6.8 a uprobe.multi
+ * link its count. The site, which the signed metadata gave the attach,
+ * is then not checked, and the log says so.
+ */
+static bool site_unreported(const struct prog_spec *spec,
+			    const struct bpf_link_info *info)
+{
+	if ((info->type != BPF_LINK_TYPE_PERF_EVENT ||
+	     info->perf_event.type != BPF_PERF_EVENT_UNSPEC) &&
+	    (info->type != BPF_LINK_TYPE_KPROBE_MULTI ||
+	     info->kprobe_multi.count) &&
+	    (info->type != BPF_LINK_TYPE_UPROBE_MULTI ||
+	     info->uprobe_multi.count))
+		return false;
+	pr_info("upatch load: this kernel does not report the site of a %s link; it is not checked",
+		attach_kind_name(spec->kind));
+	return true;
+}
+#endif
+
 /*
  * The site a kprobe, uprobe, cgroup or netfilter program attaches at is
  * named by the caller, and the caller's cgroup namespace and mount of
@@ -1509,6 +1539,10 @@ static int link_matches_spec(int link_fd,
 	}
 	if (bpf_link_get_info_by_fd(link_fd, &info, &len))
 		return -errno;
+#ifdef CONFIG_STOCK_KERNEL
+	if (site_unreported(spec, &info))
+		return 0;
+#endif
 	if (info.type == BPF_LINK_TYPE_CGROUP)
 		return info.cgroup.cgroup_id == ROOT_CGROUP_ID ?
 		       0 : -EXDEV;
@@ -1606,6 +1640,13 @@ static int open_upatch_pin_dir(const char *name)
 	return fd;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* No LSM guards the pins on a stock kernel, so there is no grant to ask. */
+static int pin_grant_request(int fd, __u32 command)
+{
+	return 0;
+}
+#else
 static int pin_grant_request(int fd, __u32 command)
 {
 	int ret = ioctl(fd, command, 0);
@@ -1614,6 +1655,7 @@ static int pin_grant_request(int fd, __u32 command)
 		return 0;
 	return ret < 0 ? -errno : -EPROTO;
 }
+#endif
 
 /* Holding fd prevents inode reuse until the task no longer has authority. */
 static int pin_grant_open(const char *name)
@@ -2152,9 +2194,16 @@ static int set_pin_payload(const char *name, const __u8 payload[32])
 
 	if (upatch_pin_path(dir, sizeof(dir), name, NULL))
 		return -ENAMETOOLONG;
+#ifdef CONFIG_STOCK_KERNEL
+	/* A stock kernel's bpffs takes no xattr. */
+	ret = upatch_pin_payload_set(name, payload);
+	if (!ret)
+		return 0;
+#else
 	if (!setxattr(dir, XATTR_PAYLOAD, payload, 32, 0))
 		return 0;
 	ret = -errno;
+#endif
 	pr_err("upatch: cannot record the payload on %s: %s; undoing the load",
 	       dir, strerror(-ret));
 	if (remove_pin_dir(name))
@@ -2163,6 +2212,7 @@ static int set_pin_payload(const char *name, const __u8 payload[32])
 	return ret;
 }
 
+#ifndef CONFIG_STOCK_KERNEL
 /* Resolve the kernel BPF keyring and compare it with the frozen record. */
 static int trust_anchor_keyring(key_serial_t *keyring, key_serial_t *serial,
 				struct op_report *rep)
@@ -2191,6 +2241,7 @@ static int trust_anchor_keyring(key_serial_t *keyring, key_serial_t *serial,
 	*serial = ring;
 	return 0;
 }
+#endif
 
 /*
  * The loader hands the programs and maps it created over to the caller,
@@ -2451,6 +2502,123 @@ static int upatch_payload_check(const struct signed_load *sl)
 	return 0;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * No kernel checks the signature on a stock kernel: userspace checks it
+ * here, over the bytes it then hands over, insns || data, against the
+ * certificates of /etc/shirudo/keys.
+ */
+static int signature_verify(const struct signed_load *sl)
+{
+	char hex[65];
+	__u8 signer[32];
+	int ret;
+
+	ret = upatch_loader_verify(sl->u, signer);
+	if (!ret) {
+		hex_encode(signer, sizeof(signer), hex);
+		pr_info("upatch: %s: signed by %s, verified in userspace",
+			sl->label, hex);
+		return 0;
+	}
+	pr_err("upatch: %s: the loader %s (%s)", sl->label,
+	       ret == -EKEYREJECTED ?
+	       "is not signed by a certificate of " STOCK_KEYS_DIR :
+	       "signature cannot be verified", strerror(-ret));
+	rep_fail(sl->rep, "signed_loader_load",
+		 ret == -EKEYREJECTED ? "signature_rejected" : "unknown", -ret,
+		 "loader signature verification failed");
+	return 1;
+}
+
+/*
+ * The map is not exclusive to the loader here: another task of root's
+ * can reach it by its ID until it is frozen. Frozen, it must hold what
+ * userspace verified.
+ */
+static int loader_map_check(const struct signed_load *sl)
+{
+	__u32 key = 0, len = sl->u->hdr.data_len ? sl->u->hdr.data_len : 4;
+	__u8 *value = xmalloc(len);
+	int ret = -ENOMEM;
+
+	if (value)
+		ret = bpf_map_lookup_elem(sl->map_fd, &key, value) ? -errno : 0;
+	if (!ret && memneq_explicit(value, upatch_data(sl->u),
+				    sl->u->hdr.data_len))
+		ret = -EBADMSG;
+	xfree(value, len);
+	if (!ret)
+		return 0;
+	pr_err("__loader.map: does not hold the verified data: %s",
+	       strerror(-ret));
+	rep_fail(sl->rep, "signed_loader_load", "tampered", -ret,
+		 "__loader.map differs from the verified data");
+	return 1;
+}
+
+static int kind_refused(const struct signed_load *sl, const char *kind,
+			const char *why)
+{
+	pr_err("upatch: %s: refused (category: kernel_abi_unsupported): %s attach is unavailable on this kernel: %s",
+	       sl->label, kind, why);
+	rep_fail(sl->rep, "pre_flight", "kernel_abi_unsupported", EOPNOTSUPP,
+		 why);
+	return 1;
+}
+
+/* What the upatch needs and the kernel lacks, refused before any load. */
+static int kinds_unsupported(const struct signed_load *sl)
+{
+	struct stock_kernel k;
+	const char *why;
+	__u32 i;
+
+	if (sl->u->signed_policy_labels)
+		return kind_refused(sl, "policy-labelled",
+				    "no seal LSM gives a task its policy on a stock kernel");
+	stock_kernel_probe(&k);
+	for (i = 0; i < sl->u->hdr.nr_progs; i++) {
+		const struct prog_spec *spec = &sl->prog_specs[i];
+
+		why = spec->role == UPATCH_PROG_ROLE_ATTACH ?
+		      stock_kernel_refusal(&k, spec->kind) : NULL;
+		if (why)
+			return kind_refused(sl, attach_kind_name(spec->kind),
+					    why);
+	}
+	return 0;
+}
+
+/*
+ * The metadata does not tell an lsm program from an fentry one; the type
+ * the loader gave it does. Without the BPF LSM active it would attach
+ * and never run.
+ */
+static int lsm_unsupported(const struct signed_load *sl)
+{
+	const struct prog_desc *pd = (const void *)((const char *)sl->cx +
+						    sl->prog_desc_off);
+	struct stock_kernel k;
+	const char *why;
+	__u32 i;
+
+	stock_kernel_probe(&k);
+	why = stock_kernel_lsm_refusal(&k);
+	for (i = 0; why && i < sl->u->hdr.nr_progs; i++) {
+		struct bpf_prog_info info = {};
+		__u32 len = sizeof(info);
+
+		if (sl->prog_specs[i].role == UPATCH_PROG_ROLE_ATTACH &&
+		    pd[i].prog_fd > 0 &&
+		    !bpf_prog_get_info_by_fd(pd[i].prog_fd, &info, &len) &&
+		    info.type == BPF_PROG_TYPE_LSM)
+			return kind_refused(sl, "lsm", why);
+	}
+	return 0;
+}
+#endif
+
 /*
  * The attach metadata is signed with the data, which the kernel has
  * not verified yet at this point: parsing it strictly here keeps a
@@ -2488,6 +2656,10 @@ static int upatch_attach_prepare(struct signed_load *sl)
 			 "invalid program attach metadata");
 		return 1;
 	}
+#ifdef CONFIG_STOCK_KERNEL
+	if (kinds_unsupported(sl))
+		return 1;
+#endif
 	ret = prepare_uprobe_targets(sl->prog_specs, u->hdr.nr_progs);
 	if (ret) {
 		const char *cat = cat_from_target_errno(-ret);
@@ -2772,16 +2944,27 @@ static int signed_load_run(struct signed_load *sl)
 	int ret;
 
 	if (refuse_unload_directive(sl) ||
+#ifdef CONFIG_STOCK_KERNEL
+	    signature_verify(sl) ||
+#else
 	    trust_anchor_keyring(&sl->keyring, &sl->serial, sl->rep) ||
+#endif
 	    upatch_signed_name_check(sl) || upatch_payload_check(sl) ||
 	    upatch_attach_prepare(sl) || loader_map_prepare(sl) ||
 	    loader_prog_load(sl))
 		return 1;
 	if (sl->verify_only)
 		return 0;
+#ifdef CONFIG_STOCK_KERNEL
+	if (loader_map_check(sl) || loader_ctx_alloc(sl) ||
+	    loader_ctx_bind_policy_maps(sl) || loader_run(sl) ||
+	    lsm_unsupported(sl) || upatch_attach(sl))
+		return 1;
+#else
 	if (loader_ctx_alloc(sl) || loader_ctx_bind_policy_maps(sl) ||
 	    loader_run(sl) || upatch_attach(sl))
 		return 1;
+#endif
 
 	pin_upatch_maps(sl->cx, u->hdr.nr_maps, sl->shared_policy_map_idx,
 			sl->shared_socket_policy_map_idx, sl->upatch_name);
@@ -2940,6 +3123,7 @@ int upatch_restore(const char *path)
 	return __upatch_apply(path, false, NULL);
 }
 
+#ifndef CONFIG_STOCK_KERNEL
 static int preflight_lsm_pin_failed(int err, struct op_report *rep)
 {
 	const char *cat = cat_from_pin_errno(err);
@@ -2950,6 +3134,7 @@ static int preflight_lsm_pin_failed(int err, struct op_report *rep)
 	rep_fail(rep, "pre_flight", cat, err, "cannot open the LSM link pin");
 	return -1;
 }
+#endif
 
 /*
  * The tamper gate before any BPF_PROG_LOAD: a concurrent operator who
@@ -2962,8 +3147,11 @@ static int upatch_preflight(const char *expect_chain,
 	__u8 want[CHAIN_DIGEST_LEN], have[CHAIN_DIGEST_LEN];
 	char have_hex[2 * CHAIN_DIGEST_LEN + 1];
 	char abi_detail[KERNEL_ABI_DETAIL_MAX];
+#ifndef CONFIG_STOCK_KERNEL
 	key_serial_t keyring, serial;
-	int fd, ret;
+	int fd;
+#endif
+	int ret;
 
 	ret = kernel_abi_check(abi_detail, sizeof(abi_detail));
 	if (ret) {
@@ -2974,6 +3162,7 @@ static int upatch_preflight(const char *expect_chain,
 		return ret;
 	}
 
+#ifndef CONFIG_STOCK_KERNEL
 	if (trust_anchor_keyring(&keyring, &serial, rep))
 		return -1;
 
@@ -2981,6 +3170,7 @@ static int upatch_preflight(const char *expect_chain,
 	if (fd < 0)
 		return preflight_lsm_pin_failed(errno, rep);
 	close(fd);
+#endif
 
 	if (!expect_chain)
 		return 0;
@@ -3395,7 +3585,12 @@ static int remove_pin_dir(const char *name)
 		if (ret)
 			return ret;
 	}
+#ifdef CONFIG_STOCK_KERNEL
+	ret = wipe_dir_flat(dir);
+	return ret ? ret : upatch_pin_payload_clear(name);
+#else
 	return wipe_dir_flat(dir);
+#endif
 }
 
 /*
@@ -5377,6 +5572,18 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* No LSM link or keyring: a register this boot says init has run. */
+static int reconcile_preflight(struct op_report *rep)
+{
+	if (netns_initial() || !chain_bound()) {
+		rep_fail(rep, "pre_flight", "not_initialized", 0,
+			 "init has not run, or not in the initial network namespace");
+		return 1;
+	}
+	return 0;
+}
+#else
 static int reconcile_preflight(struct op_report *rep)
 {
 	key_serial_t keyring, serial;
@@ -5393,6 +5600,7 @@ static int reconcile_preflight(struct op_report *rep)
 	}
 	return trust_anchor_keyring(&keyring, &serial, rep) ? 1 : 0;
 }
+#endif
 
 static int reconcile_upatch(const struct xdp_work *w,
 			    const struct xdp_device *devices, size_t count,

@@ -42,8 +42,10 @@ static const struct cmd commands[] = {
 	{ "genkey",	cmd_genkey,	GROUP_OPERATOR,	"create the signing key and certificate" },
 	{ "build",	cmd_build,	GROUP_OPERATOR,	"compile and sign a .upatch" },
 
+#ifndef CONFIG_STOCK_KERNEL
 	{ "image", cmd_image, GROUP_LOCAL,
 	  "build, verify and activate dm-verity config images" },
+#endif
 	{ "init",	cmd_init,	GROUP_TARGET,
 	  "bootstrap shirudo enforcement on this target" },
 	{ "upatch",	cmd_upatch,	GROUP_TARGET,
@@ -52,13 +54,17 @@ static const struct cmd commands[] = {
 	  "manage signed OCI packages on this target" },
 
 	{ "status",	cmd_status,	GROUP_LOCAL,	"report the state of this host" },
+#ifndef CONFIG_STOCK_KERNEL
 	{ "attest",	cmd_attest,	GROUP_LOCAL,
 	  "TPM-signed evidence (target); verify / predict (operator)" },
 	{ "keys",	cmd_keys,	GROUP_LOCAL,	"inspect cert / keyring contents" },
+#endif
 	{ "version",	cmd_version,	GROUP_LOCAL,	"print version and SHIRUDO_VERSION_ID" },
 
+#ifndef CONFIG_STOCK_KERNEL
 	{ "config",	cmd_config,	GROUP_GENERAL,
 	  "print the effective shirudo.conf (defaults if absent)" },
+#endif
 	{ "help",	cmd_help,	GROUP_GENERAL,	"show this list" },
 };
 

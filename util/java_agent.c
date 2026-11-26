@@ -102,9 +102,12 @@ static int java_dir_check(void)
 
 	if (lstat(JAVA_DIR, &st))
 		return -errno;
-	if (!S_ISDIR(st.st_mode) || st.st_uid || (st.st_mode & 0022) ||
-	    !seal_parent_labeled(JAVA_DIR "/."))
+	if (!S_ISDIR(st.st_mode) || st.st_uid || (st.st_mode & 0022))
 		return -EPERM;
+#ifndef CONFIG_STOCK_KERNEL
+	if (!seal_parent_labeled(JAVA_DIR "/."))
+		return -EPERM;
+#endif
 	return 0;
 }
 

@@ -247,6 +247,7 @@ int chain_anchor(const __u8 name[TPM_NAME_LEN],
 	       -E2BIG : 0;
 }
 
+#ifndef CONFIG_STOCK_KERNEL
 /* The binding PCR values in PCR order, as PolicyPCR hashes them. */
 static void bind_values(const __u8 pcr_before[32],
 			const __u8 phase_before[32], __u8 out[64])
@@ -658,3 +659,4 @@ out:
 	tpm_close(tpm);
 	return ret;
 }
+#endif /* !CONFIG_STOCK_KERNEL */

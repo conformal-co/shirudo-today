@@ -193,3 +193,19 @@ int keys_apply_image(int root_fd, bool boot)
 		ret = keys_check_image_purge(root_fd);
 	return ret ? ret : revocations(root_fd, true, boot, &records);
 }
+
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * builtin-keys.c revokes from the kernel keyring, which the stock-kernel
+ * profile neither has nor links; it has no config image to revoke from.
+ */
+int keys_revoke_image(const __u8 *der, size_t size, bool boot)
+{
+	return -EOPNOTSUPP;
+}
+
+int keys_revoke_check(void)
+{
+	return -EOPNOTSUPP;
+}
+#endif

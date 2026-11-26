@@ -55,6 +55,7 @@
 #include "util/initrd.h"
 #include "util/integrity.h"
 #include "util/format.h"
+#include "util/stock_kernel.h"
 #include "util/sysinfo.h"
 #include "util/timefmt.h"
 #include "util/tpm.h"
@@ -1543,6 +1544,11 @@ static void status_gather(struct status_view *v, bool include_system)
 	status_read_config(v);
 	status_read_tpm(&v->tpm);
 	status_cond_input(v);
+#ifdef CONFIG_STOCK_KERNEL
+	v->certs_rc = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR,
+				    &v->certs);
+	v->is_target = !v->certs_rc && v->certs.n;
+#endif
 }
 
 static void status_view_free(struct status_view *v)
@@ -1812,9 +1818,64 @@ static void emit_tpm_json(struct json_emit *e, const struct status_tpm *t,
 	json_obj_close(e);
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * A stock kernel has no keyring, guard, tamper counter, config image or
+ * TPM to judge: the profile reports what it keeps and what it does not.
+ */
+#define STOCK_GUARANTEES \
+	"signatures verified in userspace; root can unload or replace upatches; no kernel-enforced lockdown"
+
+static const char *stock_verdict(const struct status_view *v,
+				 const char **reason)
+{
+	*reason = v->tpm.chain_rc ? "init has not run this boot" :
+		  v->pins.unmeasured ? "upatches loaded without a verified record" : "";
+	return v->tpm.chain_rc ? "uninitialized" : *reason[0] ? "drift" : "ok";
+}
+
+static void stock_emit_json(struct json_emit *e, const struct status_view *v,
+			    const struct status_args *a)
+{
+	const char *reason, *verdict = stock_verdict(v, &reason);
+	const struct status_tpm *t = &v->tpm;
+	struct stock_kernel k;
+
+	stock_kernel_probe(&k);
+	json_obj_open(e);
+	json_kv_int(e, "schema", 1);
+	json_kv_string(e, "profile", "stock-kernel");
+	json_kv_string(e, "version_id", shirudo_version_id);
+	json_kv_string_lossy(e, "host", v->hostname);
+	json_kv_bool(e, "is_target", v->is_target);
+	json_kv_bool(e, "is_operator", v->is_operator);
+	json_kv_string(e, "status", verdict);
+	if (reason[0])
+		json_kv_string(e, "reason", reason);
+	else
+		json_kv_null(e, "reason");
+	json_kv_string(e, "guarantees", STOCK_GUARANTEES);
+	json_kv_bool(e, "bpf_lsm", k.bpf_lsm);
+	emit_certs_json(e, v);
+	emit_upatches_json(e, v);
+	if (a->include_system)
+		sysinfo_emit_json(e, &v->sysi);
+	json_obj_open_key(e, "eventlog");
+	json_kv_int(e, "entries", t->ev_rc ? 0 : t->ev_entries);
+	if (a->include_eventlog)
+		emit_eventlog_events(e);
+	json_obj_close(e);
+	json_obj_close(e);
+}
+#endif
+
 static void status_emit_json(struct json_emit *e, const struct status_view *v,
 			     const struct status_args *a)
 {
+#ifdef CONFIG_STOCK_KERNEL
+	stock_emit_json(e, v, a);
+	return;
+#endif
 	json_obj_open(e);
 	json_kv_int(e, "schema", 1);
 	json_kv_string(e, "version_id", shirudo_version_id);
@@ -2047,6 +2108,33 @@ static void print_folded(const char *const *folded, size_t nf)
 	printf(" (--show-full)\n");
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+static void stock_print_text(const struct status_view *v,
+			     const struct status_args *a)
+{
+	const char *reason, *verdict = stock_verdict(v, &reason);
+	struct upatch_table_row *rows = NULL;
+	struct stock_kernel k;
+	size_t n_rows;
+
+	stock_kernel_probe(&k);
+	print_summary(v, verdict, reason);
+	printf("%-22s %s\n", "Profile:", "stock kernel");
+	printf("%-22s %s\n", "Guarantees:", STOCK_GUARANTEES);
+	printf("%-22s %zu in %s\n", "Trusted certs:",
+	       v->certs_rc ? 0 : v->certs.n, STOCK_KEYS_DIR);
+	printf("%-22s %s\n", "BPF LSM:", k.bpf_lsm ? "active" :
+	       "inactive, lsm upatches are refused");
+	n_rows = build_upatches_table(v, &rows);
+	upatch_table_print(rows, n_rows);
+	xfree(rows, n_rows * sizeof(*rows));
+	if (a->include_eventlog)
+		print_eventlog_table();
+	if (a->include_system)
+		print_system_human(&v->sysi);
+}
+#endif
+
 static void status_print_text(const struct status_view *v,
 			      const struct status_args *a)
 {
@@ -2058,6 +2146,10 @@ static void status_print_text(const struct status_view *v,
 	size_t nc, nf = 0;
 	const char *verdict, *reason;
 
+#ifdef CONFIG_STOCK_KERNEL
+	stock_print_text(v, a);
+	return;
+#endif
 	verdict = status_verdict(&v->cin);
 	reason = status_reason(&v->cin);
 	nc = conditions(&v->cin, conds, ARRAY_SIZE(conds));
@@ -2109,6 +2201,12 @@ int cmd_status(int argc, const char **argv)
 	ret = status_parse_args(&a, argc, argv);
 	if (ret)
 		return ret == OPT_DONE ? 0 : EXIT_USAGE;
+#ifdef CONFIG_STOCK_KERNEL
+	if (a.otel || a.keepalive) {
+		pr_err("status: --otel and --keepalive send a TPM-quoted keepalive, which the stock-kernel profile does not have");
+		return EXIT_USAGE;
+	}
+#endif
 	if (a.otel) {
 		ret = status_otel_load(&otel_cfg, &otel_opts);
 		if (ret)
@@ -2134,8 +2232,13 @@ int cmd_status(int argc, const char **argv)
 	} else if (!a.keepalive && !a.otel) {
 		status_print_text(&v, &a);
 	}
+#ifdef CONFIG_STOCK_KERNEL
+	if (a.check && !ret && (v.tpm.chain_rc || v.pins.unmeasured))
+		ret = 1;
+#else
 	if (a.check && !ret && !strcmp(status_verdict(&v.cin), "tampered"))
 		ret = 1;
+#endif
 	status_view_free(&v);
 	return ret;
 }

@@ -733,6 +733,31 @@ out:
 	return ret;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * The stock-kernel profile has no single active certificate: a package
+ * may be signed for any certificate of /etc/shirudo/keys, a vendor's
+ * beside the operator's. 0 when it is one of them.
+ */
+static int cert_matches_active(const __u8 *der, size_t len)
+{
+	__u8 sha256[32], fingerprint[32];
+	struct trusted_set *set;
+	int ret;
+
+	ret = keys_digest_der(der, len, sha256, fingerprint);
+	if (ret)
+		return ret;
+	set = xcalloc(1, sizeof(*set));
+	if (!set)
+		return -ENOMEM;
+	ret = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR, set);
+	if (!ret && !keys_member(set, fingerprint))
+		ret = -EKEYREJECTED;
+	xfree(set, sizeof(*set));
+	return ret;
+}
+#else
 /* 0 when the certificate has the public key of the active cert.der. */
 static int cert_matches_active(const __u8 *der, size_t len)
 {
@@ -750,6 +775,7 @@ static int cert_matches_active(const __u8 *der, size_t len)
 	cert_free(&b);
 	return ret;
 }
+#endif
 
 static int key_fingerprint(const __u8 *der, size_t len, char hex[65])
 {
@@ -767,6 +793,7 @@ static int key_fingerprint(const __u8 *der, size_t len, char hex[65])
 	return 0;
 }
 
+#ifndef CONFIG_STOCK_KERNEL
 static int key_file_fingerprint(const char *path, char hex[65])
 {
 	size_t len = 0;
@@ -780,6 +807,7 @@ static int key_file_fingerprint(const char *path, char hex[65])
 	xfree(der, len);
 	return ret;
 }
+#endif
 
 static int write_key(const char *dst, const __u8 *der, size_t len)
 {
@@ -798,6 +826,23 @@ static int write_key(const char *dst, const __u8 *der, size_t len)
 	return ret;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* A key added is trusted from now on, for loads as for packages. */
+static int install_key(const __u8 *der, size_t len)
+{
+	char hex[65], dst[PATH_MAX];
+	int ret;
+
+	ret = key_fingerprint(der, len, hex);
+	if (ret || !cert_matches_active(der, len))
+		return ret;
+	ret = seal_mkdir_p(STOCK_KEYS_DIR, 0755);
+	if (!ret && strsprintf(dst, sizeof(dst), "%s/%s.der", STOCK_KEYS_DIR,
+			       hex) < 0)
+		ret = -ENAMETOOLONG;
+	return ret ? ret : write_key(dst, der, len);
+}
+#else
 static int install_key(const __u8 *der, size_t len)
 {
 	char hex[65], dst[PATH_MAX];
@@ -849,6 +894,7 @@ undo:
 		unlink(dst);
 	return ret;
 }
+#endif
 
 /*
  * The DER certificate a key command takes, read once so that the key
@@ -877,6 +923,43 @@ static int key_source_read(const char *source, __u8 **der, size_t *len,
 	return ret;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* The package certificates are the trusted set, whatever its files are named. */
+static int list_keys(bool json)
+{
+	char buf[8192], hex[65];
+	struct json_emit e = { .buf = buf, .cap = sizeof(buf) };
+	struct trusted_set *set;
+	int ret;
+
+	set = xcalloc(1, sizeof(*set));
+	if (!set)
+		return -ENOMEM;
+	ret = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR, set);
+	if (ret == -ENOENT)
+		ret = 0;
+	if (!ret && !json)
+		printf("Package certificates:\n%s", set->n ? "" : "  none\n");
+	json_obj_open(&e);
+	json_kv_int(&e, "schema", 1);
+	json_arr_open(&e, "fingerprints");
+	for (size_t i = 0; !ret && i < set->n; i++) {
+		hex_encode(set->certs[i].fingerprint, 32, hex);
+		if (json)
+			json_str(&e, hex);
+		else
+			printf("  %s\n", hex);
+	}
+	json_arr_close(&e);
+	json_obj_close(&e);
+	if (!ret && json && e.err)
+		ret = e.err;
+	else if (!ret && json)
+		puts(buf);
+	xfree(set, sizeof(*set));
+	return ret;
+}
+#else
 static int key_fingerprint_compare(const void *a, const void *b)
 {
 	return strcmp(*(char * const *)a, *(char * const *)b);
@@ -965,6 +1048,7 @@ static int list_keys(bool json)
 	xfree(fingerprints, cap * sizeof(*fingerprints));
 	return ret;
 }
+#endif
 
 static int load_cached_index(const char *source, struct bpm_index_entry *entries, int *n)
 {
@@ -1595,6 +1679,31 @@ static void tree_source_clear(struct tree_source *src)
 	src->trusted = NULL;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * Without a config image or a .bpf keyring, a publication is checked
+ * against what a load checks a upatch against: the certificates of
+ * /etc/shirudo/keys less the revoked. Loaded once, for every segment a
+ * walk fetches.
+ */
+static int tree_source_open(const struct bpm_tree_config *cfg,
+			    struct tree_source *src)
+{
+	int ret;
+
+	ret = bpm_oci_parse_tree_repo(cfg->endpoint, &src->c,
+				      src->repository, sizeof(src->repository));
+	if (ret)
+		return ret;
+	src->trusted = xcalloc(1, sizeof(*src->trusted));
+	if (!src->trusted)
+		return -ENOMEM;
+	ret = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR, src->trusted);
+	if (!ret && !src->trusted->n)
+		ret = -EKEYREJECTED;
+	return ret;
+}
+#else
 /* The signing set is loaded once, for every segment a walk fetches. */
 static int tree_source_open(const struct bpm_tree_config *cfg,
 			    struct tree_source *src)
@@ -1616,6 +1725,7 @@ static int tree_source_open(const struct bpm_tree_config *cfg,
 		ret = keys_check_image_set(src->trusted);
 	return ret;
 }
+#endif
 
 static int tree_verify_upatch(const char *path, const char *expected,
 			      const char *id, bool unload)
@@ -2621,6 +2731,27 @@ static const struct help bpm_operator_help = {
 	.n_sections = 1,
 };
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * A stock kernel enforces nothing: a package is installed, upgraded and
+ * removed once init has mounted the private bpffs this boot, which
+ * state_root_open() requires as well.
+ */
+static int bpm_needs_enforcement(const char *action)
+{
+	int fd = bpffs_root_open();
+
+	if (fd >= 0) {
+		close(fd);
+		return 0;
+	}
+	if (fd != -ENOENT)
+		return bpm_fail(action, fd);
+	pr_err("bpm %s: shirudo init has not run this boot; run it first",
+	       action);
+	return 1;
+}
+#else
 /*
  * A package is installed, upgraded and removed on an enforcing target
  * only. 0 there, else the exit status, after the message.
@@ -2637,6 +2768,7 @@ static int bpm_needs_enforcement(const char *action)
 	       action);
 	return 1;
 }
+#endif
 
 static int bpm_finish(int lock, int ret, const char *action)
 {

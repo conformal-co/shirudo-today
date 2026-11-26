@@ -26,6 +26,24 @@ struct xdp_device;
 int upatch_payload_digest(const struct upatch *u,
 			  __u8 out[UPATCH_PAYLOAD_HASH_LEN]) __must_check;
 
+#ifdef CONFIG_STOCK_KERNEL
+struct trusted_set;
+
+/*
+ * Whether sig is a detached CMS signature by a member of set over
+ * insns || data, the bytes the patched kernel verifies at BPF_PROG_LOAD:
+ * 0 with the member's fingerprint in signer (which may be NULL),
+ * -EKEYREJECTED when no member signed them, -EINVAL for nothing signed.
+ */
+int upatch_content_verify(const struct trusted_set *set,
+			  const void *insns, size_t insns_len,
+			  const void *data, size_t data_len,
+			  const void *sig, size_t sig_len, __u8 signer[32]);
+
+/* The same for u's loader and data, under the certificates of the keys dir. */
+int upatch_loader_verify(const struct upatch *u, __u8 signer[32]);
+#endif
+
 /*
  * What the kernel checks of a BPF upatch, checked in userspace for a Java
  * one, which has no loader: the signed type and name, the section its

@@ -30,6 +30,10 @@
 
 int seal_label(const char *path)
 {
+#ifdef CONFIG_STOCK_KERNEL
+	/* No seal reads a label on a stock kernel, so nothing is labelled. */
+	return 0;
+#endif
 	if (lsetxattr(path, XATTR_SEAL, SEAL_LABEL,
 		      sizeof(SEAL_LABEL) - 1, 0) != 0)
 		return -errno;
@@ -294,6 +298,10 @@ int seal_open_state_root(void)
 	} else if (fs.f_type == BPF_FS_MAGIC) {
 		ret = -EXDEV;
 	} else {
+#ifdef CONFIG_STOCK_KERNEL
+		/* Nothing is labelled on a stock kernel (seal_label()). */
+		return fd;
+#endif
 		len = seal_fget(fd, label);
 		if (len == SEAL_LABEL_LEN && !memcmp(label, SEAL_LABEL, sizeof(label)))
 			return fd;

@@ -28,6 +28,12 @@
 /* The initrd's own copy of the keys, measured with the initrd. */
 #define INITRD_KEYS_DIR		"/etc/shirudo/keys"
 #define INITRD_CERT_PATH	INITRD_KEYS_DIR "/" CERT_FILE
+/*
+ * The stock-kernel profile's trusted certificates, root's to place: every
+ * *.der in the directory, less the fingerprints revoked/ names.
+ */
+#define STOCK_KEYS_DIR		ETC_DIR "/keys"
+#define STOCK_REVOKED_DIR	STOCK_KEYS_DIR "/revoked"
 #define UPATCHES_DIR		VAR_LIB "/upatches"
 /*
  * The jars of the loaded Java upatches, the one directory of sealed
@@ -147,6 +153,8 @@
  * unforgeable by the bpf2 inode_setxattr guard.
  */
 #define XATTR_PAYLOAD		"security.bpf.shirudo.payload"
+/* Where the stock-kernel profile records it: its bpffs takes no xattr. */
+#define PIN_STATE_DIR		RUN_DIR "/pins"
 
 /*
  * TPM2 NV index of the measurement register (owner-defined range).

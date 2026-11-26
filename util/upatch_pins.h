@@ -69,6 +69,17 @@ int upatch_xdp_prog_open(const char *name, __u32 index, __u32 *id);
  */
 int upatch_pin_payload(const char *name, __u8 out[UPATCH_PAYLOAD_HASH_LEN]);
 
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * Record and forget the payload hash of name where a stock kernel's
+ * bpffs, which takes no xattr, cannot hold it: 0, -EINVAL for a name
+ * upatch_name_valid() refuses, or -errno.
+ */
+int upatch_pin_payload_set(const char *name,
+			   const __u8 payload[UPATCH_PAYLOAD_HASH_LEN]);
+int upatch_pin_payload_clear(const char *name);
+#endif
+
 /*
  * Calls cb with the name of each upatch that has a pin directory and stops
  * at the first nonzero return, which it returns. No directory at all is 0,

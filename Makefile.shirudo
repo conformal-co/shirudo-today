@@ -33,6 +33,13 @@ OBJ_PREFIX :=
 CRYPTO_CFLAGS :=
 endif
 
+# STOCK_KERNEL=1, with PROFILE=target: the target profile for stock
+# distribution kernels, in build/stock/.
+STOCK_KERNEL ?= 0
+ifeq ($(STOCK_KERNEL),1)
+OBJ_PREFIX := build/stock/
+endif
+
 obj = $(OBJ_PREFIX)$(1)
 
 # ----- toolchain --------------------------------------------------
@@ -337,6 +344,16 @@ BUILTIN_SRCS := \
     builtin-build.c \
     builtin-version.c
 
+# The stock-kernel profile leaves out the embedded LSM, the checks of the
+# patched kernel's ABI, the keyring, attestation and the config images.
+ifeq ($(STOCK_KERNEL),1)
+UTIL_SRCS := $(filter-out util/loader.c util/preflight.c util/kernel_abi.c, \
+	     $(UTIL_SRCS)) util/chain_stock.c util/stock_kernel.c
+BUILTIN_SRCS := $(filter-out builtin-attest.c builtin-keys.c \
+		builtin-config.c builtin-image.c,$(BUILTIN_SRCS))
+CFLAGS += -DCONFIG_STOCK_KERNEL
+endif
+
 # BPF-side libbpf headers, used straight from vendor/libbpf (the BPF
 # compile rule adds it to the include path so <bpf/...> resolves) and
 # installed for shirudo build on operator hosts.
@@ -468,6 +485,11 @@ build/target/%.o: %.c Makefile.shirudo $(CONFIG_MK_DEP)
 	$(Q)mkdir -p $(dir $@)
 	$(Q)$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
 
+build/stock/%.o: %.c Makefile.shirudo $(CONFIG_MK_DEP)
+	@printf '  CC      $@\n'
+	$(Q)mkdir -p $(dir $@)
+	$(Q)$(CC) $(CFLAGS) -MMD -MP -c $< -o $@
+
 -include $(DEPS)
 
 # The tree walk limits of util/bpm_tree.h and the keepalive window of
@@ -552,6 +574,20 @@ shirudo: $(MAIN_OBJ) $(BUILTIN_OBJS) $(UTIL_OBJS) $(VERSION_OBJ) $(LIBBPF_A)
 shirudo-target: $(MAIN_OBJ) $(BUILTIN_OBJS) $(UTIL_OBJS) $(VERSION_OBJ) $(LIBBPF_A) \
                 Makefile.shirudo $(CONFIG_MK_DEP) .github/scripts/check-static-target.sh
 	@printf '  LD      $@ (static PIE)\n'
+	$(Q)$(LD) $(CFLAGS) $(TARGET_TLS_CFLAGS) \
+	    $(HARDEN_STATIC_PIE_LDFLAGS) $(LDFLAGS) \
+	    -static-pie -static-libgcc -o $@ \
+	    $(MAIN_OBJ) $(BUILTIN_OBJS) $(UTIL_OBJS) $(VERSION_OBJ) \
+	    $(STATIC_LIBS) $(TARGET_TLS_STATIC_LINK_LIBS) \
+	    $(TARGET_STATIC_RUNTIME_LINK_LIBS)
+	$(Q)sh .github/scripts/check-static-target.sh $@ || \
+	    { rm -f $@; exit 1; }
+
+# Linked as the target binary is, without embedded BPF or vmlinux.h.
+build/stock/shirudo: $(MAIN_OBJ) $(BUILTIN_OBJS) $(UTIL_OBJS) $(VERSION_OBJ) \
+		     $(LIBBPF_A) Makefile.shirudo $(CONFIG_MK_DEP) \
+		     .github/scripts/check-static-target.sh
+	@printf '  LD      $@ (static PIE, stock kernel)\n'
 	$(Q)$(LD) $(CFLAGS) $(TARGET_TLS_CFLAGS) \
 	    $(HARDEN_STATIC_PIE_LDFLAGS) $(LDFLAGS) \
 	    -static-pie -static-libgcc -o $@ \
@@ -1125,7 +1161,8 @@ test-helpers: $(TEST_HELPERS)
 
 # util/<m>.c is tested by testing/unit/<m>.c. Each test links the util
 # objects from an archive, so it pulls in only what its module needs.
-UNIT_SRCS  := $(filter-out testing/unit/unit.c,$(wildcard testing/unit/*.c))
+UNIT_SRCS  := $(filter-out testing/unit/unit.c testing/unit/stock_kernel.c, \
+		$(wildcard testing/unit/*.c))
 UNIT_TESTS := $(patsubst testing/unit/%.c,build/unit/%,$(UNIT_SRCS))
 UNIT_LIB   := build/unit/libshirudo.a
 
@@ -1157,6 +1194,36 @@ build/unit/curl: LDFLAGS += -Wl,--wrap=curl_slist_free_all
 build/unit/upatch_pins: LDFLAGS += -Wl,--wrap=opendir,--wrap=readdir64
 
 unit-tests: $(UNIT_TESTS)
+
+# The suites of the util files the stock-kernel profile changes or adds,
+# from its objects, linked statically as its binary is.
+STOCK_UNIT_SUITES := keys java_agent upatch_verify stock_kernel upatch_pins \
+		     measured chain eventlog
+STOCK_UNIT_TESTS := $(addprefix build/stock/unit/,$(STOCK_UNIT_SUITES))
+STOCK_UNIT_LIB := build/stock/unit/libshirudo.a
+
+$(STOCK_UNIT_LIB): $(UTIL_OBJS) $(VERSION_OBJ)
+	@printf '  AR      $@\n'
+	$(Q)mkdir -p $(dir $@)
+	$(Q)rm -f $@
+	$(Q)$(AR) rcs $@ $^
+
+build/stock/unit/keys: UNIT_OBJS := build/stock/util/sign.o
+build/stock/unit/upatch_verify: UNIT_OBJS := build/stock/util/sign.o
+build/stock/unit/upatch_pins: LDFLAGS += -Wl,--wrap=opendir,--wrap=readdir64
+
+build/stock/unit/%: testing/unit/%.c testing/unit/unit.c testing/unit/unit.h \
+		    testing/unit/testkey.h $(STOCK_UNIT_LIB) $(LIBBPF_A) \
+		    build/stock/util/sign.o
+	@printf '  CC      $@\n'
+	$(Q)$(CC) $(CFLAGS) $(TARGET_TLS_CFLAGS) $(LDFLAGS) -Itesting/unit \
+		$(HARDEN_STATIC_PIE_LDFLAGS) -static-pie -static-libgcc \
+		-o $@ $< testing/unit/unit.c $(UNIT_OBJS) $(STOCK_UNIT_LIB) \
+		$(LIBBPF_A) $(TARGET_TLS_STATIC_LINK_LIBS) \
+		$(TARGET_STATIC_RUNTIME_LINK_LIBS)
+
+stock-unit-tests: $(STOCK_UNIT_TESTS)
+	$(Q)for t in $(STOCK_UNIT_TESTS); do $$t || exit 1; done
 
 # ----- sparse -----------------------------------------------------
 
@@ -1423,7 +1490,7 @@ clean:
 	$(Q)rm -f $(MAIN_OBJ) $(BUILTIN_OBJS) $(UTIL_OBJS) \
 	          $(BUILD_OBJS) $(SIGN_OBJ) $(QUOTE_CHECK_OBJS) $(VERSION_OBJ) \
 	          util/version_id.c
-	$(Q)rm -rf build/target build/unit build/quote-check build/fuzz-afl \
+	$(Q)rm -rf build/target build/stock build/unit build/quote-check build/fuzz-afl \
 	    build/fuzz-afl-cmplog
 	$(Q)rm -f $(DEPS) testing/helper/*.d
 	$(Q)rm -f $(BPF_OBJS) $(VMLINUX_H) systemd/shirudo.service \

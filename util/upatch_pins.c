@@ -19,7 +19,11 @@
 #include <shirudo/string.h>
 #include <shirudo/upatch.h>
 
+#include "io.h"
+#include "malloc.h"
 #include "paths.h"
+#include "seal.h"
+#include "upatch.h"
 #include "upatch_pins.h"
 
 static bool pin_index(const char *entry, const char *prefix, __u32 *out)
@@ -189,6 +193,67 @@ int upatch_xdp_prog_open(const char *name, __u32 index, __u32 *id)
 	return fd;
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+/* A stock kernel's bpffs takes no xattr: a root-only file per upatch. */
+static int pin_record_path(char *out, size_t cap, const char *name)
+{
+	if (!upatch_name_valid(name))
+		return -EINVAL;
+	return strsprintf(out, cap, "%s/%s.pin", PIN_STATE_DIR, name) < 0 ?
+	       -ENAMETOOLONG : 0;
+}
+
+int upatch_pin_payload_set(const char *name,
+			   const __u8 payload[UPATCH_PAYLOAD_HASH_LEN])
+{
+	char path[PATH_MAX];
+	int ret;
+
+	ret = pin_record_path(path, sizeof(path), name);
+	if (!ret)
+		ret = seal_mkdir_p(PIN_STATE_DIR, 0700);
+	if (!ret)
+		ret = seal_write_file(path, payload, UPATCH_PAYLOAD_HASH_LEN,
+				      0600);
+	return ret;
+}
+
+int upatch_pin_payload_clear(const char *name)
+{
+	char path[PATH_MAX];
+	int ret;
+
+	ret = pin_record_path(path, sizeof(path), name);
+	if (!ret && unlink(path) && errno != ENOENT)
+		ret = -errno;
+	return ret;
+}
+
+/* As getxattr() fails: -ENOENT without the pins, -ENODATA without a record. */
+int upatch_pin_payload(const char *name, __u8 out[UPATCH_PAYLOAD_HASH_LEN])
+{
+	char dir[PATH_MAX], path[PATH_MAX];
+	__u8 *buf = NULL;
+	size_t len = 0;
+	int ret;
+
+	if (upatch_pin_path(dir, sizeof(dir), name, NULL))
+		return -ENAMETOOLONG;
+	if (access(dir, F_OK))
+		return -errno;
+	ret = pin_record_path(path, sizeof(path), name);
+	if (!ret)
+		ret = read_file(path, UPATCH_PAYLOAD_HASH_LEN, &buf, &len);
+	if (ret)
+		return ret == -ENOENT ? -ENODATA : ret;
+	if (len == UPATCH_PAYLOAD_HASH_LEN)
+		memcpy(out, buf, len);
+	else
+		ret = -EINVAL;
+	xfree(buf, len + 1);
+	return ret;
+}
+#else
 int upatch_pin_payload(const char *name, __u8 out[UPATCH_PAYLOAD_HASH_LEN])
 {
 	char dir[PATH_MAX];
@@ -201,6 +266,7 @@ int upatch_pin_payload(const char *name, __u8 out[UPATCH_PAYLOAD_HASH_LEN])
 		return -errno;
 	return n == UPATCH_PAYLOAD_HASH_LEN ? 0 : -EINVAL;
 }
+#endif
 
 int upatch_each_pinned(int (*cb)(const char *name, void *ctx), void *ctx)
 {

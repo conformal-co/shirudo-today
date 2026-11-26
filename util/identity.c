@@ -128,11 +128,14 @@ static int identity_map_read(int fd, struct identity *out)
 
 int identity_read_at(int dirfd, const char *name, struct identity *out)
 {
-	LIBBPF_OPTS(bpf_obj_get_opts, opts,
-		    .file_flags = BPF_F_PATH_FD,
-		    .path_fd = dirfd);
+	LIBBPF_OPTS(bpf_obj_get_opts, opts);
 	int fd, ret;
 
+	/* Linux before 6.5 refuses BPF_F_PATH_FD with EINVAL. */
+	if (dirfd != AT_FDCWD) {
+		opts.file_flags = BPF_F_PATH_FD;
+		opts.path_fd = dirfd;
+	}
 	memset(out, 0, sizeof(*out));
 	fd = bpf_obj_get_opts(name, &opts);
 	if (fd < 0)
@@ -153,6 +156,38 @@ int identity_read(struct identity *out)
  * enters it, so the one directory that holds the identity pin and lies
  * on the device it records is the bpffs root, reached through any mount.
  */
+#ifdef CONFIG_STOCK_KERNEL
+/*
+ * No identity map is pinned on a stock kernel to tell init's bpffs from
+ * one mounted over it: the root of a bpffs mount at the private path is
+ * the one taken, as root can unmount init's anyway.
+ */
+int bpffs_root_open(void)
+{
+	int fd, ret;
+
+	ret = bpffs_mounted_at(BPFFS_DIR);
+	if (ret <= 0)
+		return ret ? ret : -ENOENT;
+	fd = open(BPFFS_DIR, O_RDONLY | O_DIRECTORY | O_CLOEXEC);
+	return fd < 0 ? -errno : fd;
+}
+
+/*
+ * Nor does init freeze the state directory's device and inode: the state
+ * root is VAR_LIB once init has mounted the private bpffs this boot.
+ */
+int state_root_open(void)
+{
+	int bpffs;
+
+	bpffs = bpffs_root_open();
+	if (bpffs < 0)
+		return bpffs;
+	close(bpffs);
+	return seal_open_state_root();
+}
+#else
 static int bpffs_open_identity(struct identity *id)
 {
 	struct stat st;
@@ -210,3 +245,4 @@ int state_root_open(void)
 	}
 	return fd;
 }
+#endif

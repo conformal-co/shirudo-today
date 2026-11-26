@@ -51,10 +51,29 @@ export prefix exec_prefix bindir libexecdir sharedir libdir mandir completionsdi
        systemdunitdir udevrulesdir dracutmodulesdir SHIRUDO_TARGET_PKG_CONFIG_PATH \
        SHIRUDO_TARGET_STATIC_LIBDIR
 
-.PHONY: all help target target-deps target-deps-clean shirudo-target target-config shirudo-build quote-check quote-check-deps docs bpf-deps install install-target install-operator clean distclean config tests proofs proofs-cbmc proofs-lean4 sparse tags cscope
+.PHONY: all help stock stock-unit-tests target target-deps target-deps-clean shirudo-target target-config shirudo-build quote-check quote-check-deps docs bpf-deps install install-target install-operator clean distclean config tests proofs proofs-cbmc proofs-lean4 sparse tags cscope
 
+# make STOCK_KERNEL=1 builds build/stock/shirudo, the static PIE target
+# binary for stock distribution kernels, instead of the operator binary.
+STOCK_KERNEL ?= 0
+ifeq ($(STOCK_KERNEL),1)
+all: stock
+else
 all: config
 	+$(Q)$(MAKE) -f Makefile.shirudo PROFILE=operator CONFIG_MK=config.mk all
+endif
+
+stock:
+	+$(Q)$(MAKE) target-deps
+	+$(Q)$(MAKE) target-config
+	+$(Q)$(MAKE) -f Makefile.shirudo PROFILE=target STOCK_KERNEL=1 \
+		CONFIG_MK=config-target.mk build/stock/shirudo
+
+stock-unit-tests:
+	+$(Q)$(MAKE) target-deps
+	+$(Q)$(MAKE) target-config
+	+$(Q)$(MAKE) -f Makefile.shirudo PROFILE=target STOCK_KERNEL=1 \
+		CONFIG_MK=config-target.mk stock-unit-tests
 
 target-deps:
 ifeq ($(TARGET_DEPS_PREBUILT),1)
@@ -88,6 +107,7 @@ help:
 	@printf '%s\n' \
 	  'shirudo make targets:' \
 	  '  Build: make, make target, make target-deps, make bpf-deps, make install' \
+	  '  Stock kernels: make STOCK_KERNEL=1 (build/stock/shirudo), make stock-unit-tests' \
 	  '  Operator tools: make shirudo-build, make quote-check' \
 	  '  Local stack: make stack-up, make oci, make telemetry, make vm, make vm-enroll, make vm-sbom, make shields, make xtop, make stack-down' \
 	  '  Checks: make sparse' \

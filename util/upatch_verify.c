@@ -56,6 +56,61 @@ static bool java_sections_complete(const struct upatch *u)
 	return upatch_signed_jar(u, &len);
 }
 
+#ifdef CONFIG_STOCK_KERNEL
+int upatch_content_verify(const struct trusted_set *set,
+			  const void *insns, size_t insns_len,
+			  const void *data, size_t data_len,
+			  const void *sig, size_t sig_len, __u8 signer[32])
+{
+	size_t len;
+	__u8 *buf;
+	int ret;
+
+	if (check_add_overflow(insns_len, data_len, &len) || !len)
+		return -EINVAL;
+	buf = xmalloc(len);
+	if (!buf)
+		return -ENOMEM;
+	memcpy(buf, insns, insns_len);
+	if (data_len)
+		memcpy(buf + insns_len, data, data_len);
+	ret = keys_verify_signature(set, buf, len, sig, sig_len, signer);
+	xfree(buf, len);
+	return ret;
+}
+
+/* The signature of u over insns || data, by a certificate of the keys dir. */
+static int trusted_verify(const struct upatch *u, const void *insns,
+			  size_t insns_len, const void *data, size_t data_len,
+			  __u8 signer[32])
+{
+	struct trusted_set *set;
+	int ret;
+
+	set = xcalloc(1, sizeof(*set));
+	if (!set)
+		return -ENOMEM;
+	ret = keys_load_dir(STOCK_KEYS_DIR, STOCK_REVOKED_DIR, set);
+	if (!ret)
+		ret = upatch_content_verify(set, insns, insns_len, data,
+					    data_len, upatch_signature(u),
+					    u->hdr.signature_len, signer);
+	xfree(set, sizeof(*set));
+	return ret;
+}
+
+int upatch_loader_verify(const struct upatch *u, __u8 signer[32])
+{
+	return trusted_verify(u, upatch_loader(u), u->hdr.loader_insns_len,
+			      upatch_data(u), u->hdr.data_len, signer);
+}
+
+static int java_signature_verify(const struct upatch *u)
+{
+	return trusted_verify(u, upatch_data(u), u->hdr.data_len, NULL, 0,
+			      NULL);
+}
+#else
 /*
  * The kernel trusts a BPF signer only through the .bpf keyring, so a
  * Java signer has to be there too. Activation already refuses a set the
@@ -106,6 +161,7 @@ static int java_signature_verify(const struct upatch *u)
 	xfree(set, sizeof(*set));
 	return ret;
 }
+#endif
 
 int java_upatch_verify(const struct upatch *u)
 {
