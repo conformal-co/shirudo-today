@@ -105,7 +105,15 @@ PROBED_WARNINGS := -Wdate-time -Wswitch-default -Wmissing-include-dirs \
 CC_WARNINGS := $(call cc-option,$(CC),$(PROBED_WARNINGS))
 
 SHIRUDO_DEBUG ?= 1
-DEBUG_CFLAGS := $(if $(filter 1 yes y true,$(SHIRUDO_DEBUG)),-g,)
+# The debug info names the checkout's directory, and the build ID hashes
+# the debug info: without the map, the same commit built in another
+# directory gives another binary, stripped or not. Target dependencies
+# prebuilt elsewhere (TARGET_DEPS_DIR) are named as if make target-deps
+# had built them in the checkout.
+DEPS_PREFIX := $(filter /%,$(TARGET_DEPS_DIR))
+DEBUG_PREFIX_MAP := -fdebug-prefix-map=$(CURDIR)=. \
+	$(if $(DEPS_PREFIX),-fdebug-prefix-map=$(DEPS_PREFIX)=./build/target-deps)
+DEBUG_CFLAGS := $(if $(filter 1 yes y true,$(SHIRUDO_DEBUG)),-g $(DEBUG_PREFIX_MAP),)
 
 # Toolchain hardening, set here rather than left to the compiler's
 # defaults, which differ between distributions, or to packaging flags,
@@ -419,7 +427,8 @@ libbpf: $(LIBBPF_A)
 $(LIBBPF_A): $(LIBBPF_SRCS)
 	@printf '  LIBBPF\n'
 	$(Q)$(MAKE) -C $(LIBBPF_VENDOR) CC="$(CC)" Q="$(Q)" \
-		EXTRA_CFLAGS="$(WERROR_CFLAGS) $(LIBELF_CFLAGS) $(ZLIB_CFLAGS) \
+		EXTRA_CFLAGS="$(WERROR_CFLAGS) $(DEBUG_PREFIX_MAP) \
+			$(LIBELF_CFLAGS) $(ZLIB_CFLAGS) \
 			$(if $(SANITIZE_MEMORY), \
 			-fno-omit-frame-pointer $(SANITIZE_CFLAGS))"
 
@@ -512,7 +521,8 @@ util/version_id.c:
 	describe_c=$$(printf '%s' "$$describe" | sed 's/[\\"]/\\&/g'); \
 	rev=$$(git rev-parse HEAD 2>/dev/null || cat VERSION); \
 	dirty=$$(git diff-index --quiet HEAD 2>/dev/null || echo -dirty); \
-	cfg=$$(sha256sum config.mk Makefile.shirudo 2>/dev/null | \
+	cfg=$$(sed $(if $(DEPS_PREFIX),-e 's|$(DEPS_PREFIX)|./build/target-deps|g') \
+	       -e 's|$(CURDIR)|.|g' $(CONFIG_MK) Makefile.shirudo 2>/dev/null | \
 	       sha256sum | cut -c1-16); \
 	id=$$(printf '%s%s|%s' "$$rev$$dirty" "$$cfg" | \
 	      sha256sum | cut -d' ' -f1); \

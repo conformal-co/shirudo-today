@@ -110,6 +110,14 @@ openssl: $(OPENSSL_STAMP)
 # must not pick up a provider or engine from the host filesystem. The
 # OPENSSLDIR is the Debian-family system location so default trust
 # lookups land on the target's CA store, not on this build prefix.
+# The binary must not change with the directory or the time it is built
+# in. ENGINESDIR and MODULESDIR would be under this build prefix, an
+# absolute path into the checkout: shirudo loads no OpenSSL
+# configuration, which alone names an engine or provider to load from
+# them, and the providers are built in, so they are never searched and
+# name a directory that does not exist. The "built on" date that
+# OpenSSL_version() reports is SOURCE_DATE_EPOCH's, the epoch unless the
+# caller sets one, rather than the time of the build.
 $(OPENSSL_STAMP):
 	@mkdir -p "$(TARGET_SOURCE_DIR)" "$(TARGET_OPENSSL_PREFIX)"
 	@if test ! -f "$(OPENSSL_TARBALL)"; then \
@@ -124,7 +132,9 @@ $(OPENSSL_STAMP):
 			--openssldir=/etc/ssl \
 			--libdir=lib \
 			no-shared no-module no-docs no-tests no-apps
-	@$(MAKE) -C "$(OPENSSL_SOURCE)" -j$$(nproc)
+	@SOURCE_DATE_EPOCH=$${SOURCE_DATE_EPOCH:-0} \
+		$(MAKE) -C "$(OPENSSL_SOURCE)" -j$$(nproc) \
+		ENGINESDIR=/nonexistent MODULESDIR=/nonexistent
 	@$(MAKE) -C "$(OPENSSL_SOURCE)" DESTDIR= install_sw
 	@touch "$@"
 
