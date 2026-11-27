@@ -29,7 +29,7 @@
         <kbd>/</kbd>
       </form>
       <button class="theme-toggle" type="button" hidden></button>
-      <a class="gh" href="{{ repository }}">GitHub</a>
+      <a class="gh" href="{{ repository if repository.startswith(('https://', 'http://')) else '#' }}">GitHub</a>
     </div>
   </div>
 </header>
